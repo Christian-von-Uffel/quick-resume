@@ -65,6 +65,7 @@ const DEFAULT_PROFILE = {
   github: "",
   website: "",
   visibleContactFields: DEFAULT_VISIBLE_CONTACT_FIELDS,
+  education: [],
 };
 
 const DEFAULT_LLM_SETTINGS = {
@@ -227,7 +228,7 @@ function formatResumeDate(date = new Date()) {
   return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
 }
 
-function buildResumeTitle(company, jobTitle, date = new Date()) {
+function titleResume(company, jobTitle, date = new Date()) {
   const formattedCompany = formatResumeName(company);
   const formattedTitle = formatResumeName(jobTitle);
   const parts = [formattedCompany, formattedTitle].filter(Boolean);
@@ -235,7 +236,7 @@ function buildResumeTitle(company, jobTitle, date = new Date()) {
   return `${parts.join(" - ")} - ${formatResumeDate(date)}`;
 }
 
-function buildGeneratedResumeTitle(company, jobTitle, date = new Date()) {
+function titleGeneratedResume(company, jobTitle, date = new Date()) {
   const formattedCompany = formatResumeName(company);
   const formattedTitle = formatResumeName(jobTitle);
   const parts = [formattedCompany, formattedTitle, formatResumeDate(date)].filter(Boolean);
@@ -255,6 +256,26 @@ function getResumeName(md, fallback = "Untitled Resume") {
 
 function createResumeMarkdown(name) {
   return name ? `# ${name}` : "";
+}
+
+function makeEducationId() {
+  return `edu-${makeResumeId()}`;
+}
+
+function createEducationItem(values = {}) {
+  const startParts = parseWorkDateParts(values.startDate ?? "");
+  const endParts = parseWorkDateParts(values.endDate ?? "");
+
+  return {
+    id: values.id ?? makeEducationId(),
+    school: values.school ?? "",
+    degree: values.degree ?? "",
+    startMonth: normalizeWorkMonth(values.startMonth ?? startParts.month),
+    startYear: normalizeWorkYear(values.startYear ?? startParts.year),
+    endMonth: normalizeWorkMonth(values.endMonth ?? endParts.month),
+    endYear: normalizeWorkYear(values.endYear ?? endParts.year),
+    description: values.description ?? "",
+  };
 }
 
 function createWorkHistoryItem(values = {}) {
@@ -310,7 +331,7 @@ function parseWorkHistory(md) {
 }
 
 function createResume(company = "", jobTitle = "") {
-  const name = buildResumeTitle(company, jobTitle);
+  const name = titleResume(company, jobTitle);
   const roleForMarkdown = formatResumeName(jobTitle);
   return {
     id: makeResumeId(),
@@ -421,6 +442,9 @@ function normalizeProfile(value) {
     ...DEFAULT_PROFILE,
     ...(value && typeof value === "object" ? value : {}),
     visibleContactFields: normalizeStoredList(value?.visibleContactFields, DEFAULT_VISIBLE_CONTACT_FIELDS),
+    education: sortEducation(
+      normalizeStoredList(value?.education, []).map(normalizeEducationItem)
+    ),
   };
 }
 
@@ -628,6 +652,33 @@ function normalizeWorkHistoryItem(value = {}) {
   });
 }
 
+function normalizeEducationItem(value = {}) {
+  return createEducationItem({
+    ...value,
+    id: value.id,
+    school: value.school ?? "",
+    degree: value.degree ?? "",
+    startMonth: value.startMonth ?? "",
+    startYear: value.startYear ?? "",
+    endMonth: value.endMonth ?? "",
+    endYear: value.endYear ?? "",
+    description: Array.isArray(value.description)
+      ? value.description.join("\n")
+      : value.description ?? "",
+  });
+}
+
+function compareEducationByDate(a, b) {
+  const endDiff =
+    workHistorySortScore(b.endMonth, b.endYear) - workHistorySortScore(a.endMonth, a.endYear);
+  if (endDiff !== 0) return endDiff;
+  return workHistorySortScore(b.startMonth, b.startYear) - workHistorySortScore(a.startMonth, a.startYear);
+}
+
+function sortEducation(items) {
+  return [...items].sort(compareEducationByDate);
+}
+
 function normalizeResume(value, index = 0) {
   const fallback = DEFAULT_RESUME;
   const stored = value && typeof value === "object" ? value : {};
@@ -695,6 +746,41 @@ function mergeWorkHistory(current, incoming) {
   return merged.length > 0 ? sortWorkHistory(merged) : merged;
 }
 
+function educationKey(item) {
+  return [
+    item.school,
+    item.degree,
+    item.startMonth,
+    item.startYear,
+    item.endMonth,
+    item.endYear,
+  ]
+    .map((part) => String(part ?? "").trim().toLowerCase())
+    .join("|");
+}
+
+function mergeEducation(current, incoming) {
+  const merged = [...(current ?? [])];
+
+  (incoming ?? []).forEach((item) => {
+    const normalized = normalizeEducationItem(item);
+    const key = educationKey(normalized);
+    const existingIndex = merged.findIndex((existing) => educationKey(existing) === key);
+
+    if (existingIndex >= 0) {
+      merged[existingIndex] = {
+        ...merged[existingIndex],
+        ...normalized,
+        id: merged[existingIndex].id,
+      };
+    } else if (normalized.school || normalized.degree || normalized.description) {
+      merged.push(normalized);
+    }
+  });
+
+  return merged.length > 0 ? sortEducation(merged) : merged;
+}
+
 function getVisibleContactLine(profile) {
   return (profile.visibleContactFields ?? DEFAULT_VISIBLE_CONTACT_FIELDS)
     .map((field) => profile[field])
@@ -705,10 +791,18 @@ function getVisibleContactLine(profile) {
 function coerceImportedProfile(profile) {
   if (!profile || typeof profile !== "object") return {};
 
-  return CONTACT_FIELDS.concat([["name"], ["headline"]]).reduce((acc, [field]) => {
-    if (typeof profile[field] === "string") acc[field] = profile[field].trim();
-    return acc;
+  const acc = CONTACT_FIELDS.concat([["name"], ["headline"]]).reduce((res, [field]) => {
+    if (typeof profile[field] === "string") res[field] = profile[field].trim();
+    return res;
   }, {});
+
+  if (Array.isArray(profile.education)) {
+    acc.education = sortEducation(profile.education.map(normalizeEducationItem));
+  } else {
+    acc.education = [];
+  }
+
+  return acc;
 }
 
 function validateExtractedJobTarget(value) {
@@ -974,7 +1068,7 @@ async function callLlm(settings, prompt, file) {
   return callGemini(request);
 }
 
-function buildImportPrompt() {
+function importResume() {
   return `<task>
 Extract resume data from the uploaded file.
 </task>
@@ -1017,7 +1111,7 @@ Accept any visible resume date format (January, Jan, 01, 03/2020, 2020-01, etc.)
 </schema>`;
 }
 
-function buildSelectFitPrompt({ profile, workHistory, instructions }) {
+function selectBestFittingExperience({ profile, workHistory, instructions }) {
   return `<task>
 Select the resume evidence that best shows the candidate is a straightforward fit for the target role.
 </task>
@@ -1081,7 +1175,7 @@ Use excludedItems to explain what you intentionally left out and why.
 </schema>`;
 }
 
-function buildGeneratePrompt({ profile, selectedEvidence, instructions, jobTitle }) {
+function generateResume({ profile, selectedEvidence, instructions, jobTitle }) {
   return `<task>
 Generate polished resume markdown for the current resume builder from curated fit evidence.
 </task>
@@ -1132,7 +1226,7 @@ Work history dates are stored as numeric months ("01"-"12") and years ("2020", o
 </instructions>`;
 }
 
-function buildCleanScrapedJobDescriptionPrompt({ title, metaDescription, rawText }) {
+function extractJobDescription({ title, metaDescription, rawText }) {
   return `<task>
 Extract and print out just the core job description from the provided raw page text.
 </task>
@@ -1210,9 +1304,11 @@ Do not infer missing values from general context.
 </schema>`;
 }
 
-function buildMissingExperienceDetailsPrompt({ workHistory, jobDescription }) {
+function findMissingExperience({ workHistory, jobDescription }) {
   return `<task>
-Find simple, discrete work experience questions from the job description for details that are not clearly listed anywhere in the candidate's work history.
+1. Analyze the job description below to compile a list of necessary skills, experiences, and responsibilities.
+2. Cross-reference this list against the candidate's work history to identify gaps (things requested in the job description but not clearly demonstrated or mentioned in the work history).
+3. Generate simple, direct, conversational questions to ask the candidate about those gaps so they can fill in their work history.
 </task>
 
 <work_history>
@@ -1224,27 +1320,35 @@ ${jobDescription}
 </job_description>
 
 <instructions>
-Return only valid JSON. Do not wrap it in markdown.
-Identify concrete skills, tools, technologies, methodologies, or hands-on responsibilities required in the job description that are missing from the candidate's work history.
-For each missing requirement, generate a simple, direct, plainspoken question.
-Every question must start with the exact phrase "Do you have experience".
-Each question must be written in a natural, conversational, real-world style—exactly how a real hiring manager or recruiter would ask a candidate during an interview.
-Do not copy or mimic dry, robotic, bureaucratic, or formal job description jargon. Convert policy-heavy, corporate, or overly academic phrasing into simple, conversational, active verbs.
-Ask about the actual, day-to-day work behind the requirement. For example, instead of asking about "complying with policies regarding X" or "upholding regulations of Y", ask about the concrete day-to-day task itself (e.g. "Do you have experience doing Z?").
-Each question must be simple, focusing on a single, discrete topic that can be answered with a clear "yes" or "no". Do not combine multiple separate responsibilities or ask multi-part questions.
-Never use vague, broad, or high-level category words (like "all front-end duties", "various tasks", "general functions", or "overall responsibilities") in the question.
-Keep plainspokenDetail simple and factual, written as a reusable work history detail after the user confirms a role.
-Limit to the 10 most useful missing details.
+- Identify concrete skills, tools, technologies, methodologies, or hands-on responsibilities in the job description that are missing from the candidate's work history.
+- For each gap, generate a simple, direct, conversational question.
+- Every question MUST start with the exact phrase "Do you have experience" (e.g. "Do you have experience conducting customer discovery interviews?").
+- Write questions in natural, active, plainspoken language—exactly how a recruiter or hiring manager would ask a candidate during an interview. Avoid robotic, academic, corporate, or policy-heavy jargon.
+- Each question must be extremely simple and focus on exactly ONE discrete topic or skill that can be answered with a clear "yes" or "no". Never ask multi-part questions.
+- Keep "plainspokenDetail" simple, factual, and reusable as a bullet point in a work history description (e.g., "Conducted customer discovery interviews to identify user needs.").
+
+CRITICAL VALIDATION RULES - Violating these will cause the question to be rejected:
+1. Do NOT use the word "and" or "or" anywhere in the question (split combined requirements into separate questions).
+2. Do NOT use the symbols "/" or "&" anywhere in the question.
+3. Do NOT use any of the following banned broad or category words anywhere in the question:
+   - "all", "any", "various", "multiple", "overall", "general"
+   - "function", "functions", "duties", "tasks", "responsibilities"
+   - "frontend", "front-end"
+   - "including", "such as", "like", "etc"
+Instead of asking broad questions, ask about a single, specific activity (e.g., instead of "Do you have experience with agile tasks?", ask "Do you have experience working in an agile team?").
+
+Limit to the 10 most useful missing details. Generate at least 5 details if possible.
+Return only valid JSON matching the schema below. Do not wrap it in markdown block code or add comments.
 </instructions>
 
 <schema>
 {
   "missingExperienceDetails": [
     {
-      "skill": "Skill or detail from the job description",
+      "skill": "Specific skill or detail from the job description (e.g., Customer discovery interviews)",
       "whyItMatters": "Short reason this appears important in the job description.",
-      "question": "Do you have experience with this skill or detail?",
-      "plainspokenDetail": "Experience with this skill or detail."
+      "question": "Do you have experience...",
+      "plainspokenDetail": "Reusable work history detail (e.g., Conducted customer discovery interviews to identify user needs.)"
     }
   ]
 }
@@ -1983,7 +2087,7 @@ export default function App() {
       // 3. Clean up raw content using the cheapest model
       setScrapeSuccess("Scraped raw text. Cleaning up job description with AI...");
       
-      const cleanPrompt = buildCleanScrapedJobDescriptionPrompt({
+      const cleanPrompt = extractJobDescription({
         title: pageTitle,
         metaDescription: pageDescription,
         rawText: scrapedText,
@@ -2023,7 +2127,7 @@ export default function App() {
     try {
       const text = await callLlm(
         applyApiKeyDrafts(llmSettings, apiKeyDrafts),
-        buildMissingExperienceDetailsPrompt({ workHistory, jobDescription }),
+        findMissingExperience({ workHistory, jobDescription }),
         null
       );
       const details = validateMissingExperienceDetails(extractJson(text));
@@ -2155,7 +2259,7 @@ export default function App() {
     try {
       const base64 = await readFileAsBase64(file);
       setImportStatus("Asking the model to extract profile and work history...");
-      const text = await callLlm(applyApiKeyDrafts(llmSettings, apiKeyDrafts), buildImportPrompt(), {
+      const text = await callLlm(applyApiKeyDrafts(llmSettings, apiKeyDrafts), importResume(), {
         name: file.name,
         mimeType: file.type || "application/octet-stream",
         base64,
@@ -2164,10 +2268,19 @@ export default function App() {
       const importedProfile = coerceImportedProfile(imported.profile);
       const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
 
-      setProfile((current) => ({
-        ...current,
-        ...Object.fromEntries(Object.entries(importedProfile).filter(([, value]) => value)),
-      }));
+      setProfile((current) => {
+        const nextProfile = {
+          ...current,
+          ...Object.fromEntries(
+            Object.entries(importedProfile)
+              .filter(([key, value]) => key !== "education" && value)
+          ),
+        };
+        if (Array.isArray(importedProfile.education)) {
+          nextProfile.education = mergeEducation(current.education ?? [], importedProfile.education);
+        }
+        return nextProfile;
+      });
       setWorkHistory((current) => mergeWorkHistory(current, importedHistory));
       setImportStatus(`Imported ${importedHistory.length} role${importedHistory.length === 1 ? "" : "s"} from ${file.name}.`);
     } catch (error) {
@@ -2190,12 +2303,12 @@ export default function App() {
         null
       );
       const extractedTarget = validateExtractedJobTarget(extractJson(targetText));
-      const resumeTitle = buildGeneratedResumeTitle(extractedTarget.company, extractedTarget.position);
+      const resumeTitle = titleGeneratedResume(extractedTarget.company, extractedTarget.position);
 
       setGenerateStatus("Selecting aligned work history...");
       const selectionText = await callLlm(
         settingsWithDraftKeys,
-        buildSelectFitPrompt({ profile, workHistory, instructions: generationInstructions }),
+        selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions }),
         null
       );
       const selectedEvidence = validateSelectedResumeEvidence(extractJson(selectionText));
@@ -2203,7 +2316,7 @@ export default function App() {
       setGenerateStatus("Generating resume from selected evidence...");
       const text = await callLlm(
         settingsWithDraftKeys,
-        buildGeneratePrompt({
+        generateResume({
           profile,
           selectedEvidence,
           instructions: generationInstructions,
@@ -3587,7 +3700,7 @@ export default function App() {
 
             {(resumeCompanyDraft.trim() || resumeJobTitleDraft.trim()) && (
               <p className="mt-3 text-xs text-neutral-500">
-                Resume title: {buildResumeTitle(resumeCompanyDraft, resumeJobTitleDraft)}
+                Resume title: {titleResume(resumeCompanyDraft, resumeJobTitleDraft)}
               </p>
             )}
 
