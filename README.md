@@ -9,6 +9,7 @@ Powered by [pretext](https://github.com/chenglou/pretext) for DOM-free text meas
 ## Features
 
 - **Auto-fit**: Binary search finds the optimal font size and line height to fill exactly one page
+- **Multi-page**: Auto-fit stops shrinking at a configurable minimum font size; when there's more content than fits one page at a readable size, it flows onto additional pages instead
 - **Markdown editor**: Write your resume in simple markdown (`#`, `##`, `###`, `-`, `---`)
 - **Live preview**: Scaled A4 page preview updates as you type
 - **Fine-grained controls**: Font size, line spacing, page margin, section spacing, item spacing, separator spacing
@@ -37,11 +38,13 @@ This speed unlocks something that would otherwise be impractical: we can run a b
 
 **Pass 2**: With that font size locked, binary search for the maximum line height (up to 1.8x) that still fits.
 
-The result is a resume that always fills exactly one page — add more content and the font shrinks, remove content and it grows.
+The result is a resume that fills the page — add more content and the font shrinks, remove content and it grows.
+
+**Multi-page flow**: Auto-fit won't shrink the font below the configurable **Min Font Size** floor. Once the content can no longer fit one page at that floor, the font holds steady and the layout paginates: lines are packed page by page (with keep-with-next rules so section headers and job titles aren't stranded at the bottom of a page), and the preview stacks each A4 page vertically.
 
 ### PDF Export
 
-The export uses the browser's native `window.print()` — no server, no headless browser, no PDF library. Before printing, it temporarily restructures the page: hides everything except the resume, removes the scaled preview transform, repositions the page at the top-left of the viewport at the exact scale needed to fill an A4 sheet (794px wide), injects a `@page { size: A4; margin: 0 }` style, and sets the document title to the person's name so the downloaded file is named nicely. After printing (or cancelling), all styles are restored. The result is a pixel-perfect A4 PDF that matches what you see in the preview.
+The export uses the browser's native `window.print()` — no server, no headless browser, no PDF library. Before printing, it clones each rendered page into an isolated print container, scales every clone to exactly fill an A4 sheet (794px wide), and separates them with `break-after: page` so each page prints on its own sheet. It injects a `@page { size: A4; margin: 0 }` style, hides the rest of the app during printing, and sets the document title to the person's name so the downloaded file is named nicely. After printing (or cancelling), the clones and styles are removed. The result is a pixel-perfect, multi-page A4 PDF that matches what you see in the preview.
 
 ## Markdown Format
 

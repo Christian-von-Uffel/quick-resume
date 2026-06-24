@@ -10,6 +10,8 @@ const LH_MIN = 1.15;
 const LH_MAX = 1.8;
 const LH_DEFAULT = 1.5;
 const FS_MAX_DEFAULT = 14;
+const FS_MIN_DEFAULT = 10; // Auto-fit font floor: stop shrinking here and flow onto more pages instead
+const PAGE_GAP = 24; // Visual gap between stacked pages in the preview
 const STORAGE_KEY = "quick-resume:v1";
 const PROFILE_EXPORT_VERSION = 1;
 const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
@@ -1451,22 +1453,42 @@ function measureBlocks(blocks, baseFontSize, contentW, lhMult = LH_DEFAULT, sect
   return h;
 }
 
-/* ── Layout blocks into positioned lines ─────────────────── */
-function layoutBlocks(blocks, baseFontSize, contentW, pad, lhMult = LH_DEFAULT, sectionSpacing = 18, itemSpacing = 10, separatorSpacing = 16) {
-  const positioned = [];
+/* ── Paginate blocks into multiple pages ───────────────────── */
+/* Returns an array of pages, each an array of positioned items whose
+   `y` is relative to that page's top (starting at `pad`). Content that
+   exceeds one page flows onto the next, with keep-with-next rules so
+   section headers and item titles aren't stranded at a page bottom. */
+function paginateBlocks(blocks, baseFontSize, contentW, pad, lhMult = LH_DEFAULT, sectionSpacing = 18, itemSpacing = 10, separatorSpacing = 16, pageContentH = 0) {
+  const pages = [];
+  let current = [];
   let y = pad;
+  const bottom = pad + pageContentH; // max y a line may reach on a page
+
+  const pushPage = () => {
+    pages.push(current);
+    current = [];
+    y = pad;
+  };
 
   for (let idx = 0; idx < blocks.length; idx++) {
     const block = blocks[idx];
+
+    let spacingBefore = 0;
     if (block.mt) {
       const isSection = block.fontScale === 0.85 && block.bold;
       const isItem = block.mt > 0 && !isSection;
-      y += isSection ? sectionSpacing : isItem ? itemSpacing : block.mt;
+      spacingBefore = isSection ? sectionSpacing : isItem ? itemSpacing : block.mt;
     }
+
     if (block.type === "hr") {
-      y += separatorSpacing;
-      positioned.push({ type: "hr", y });
-      y += 1 + separatorSpacing;
+      const hrHeight = separatorSpacing + 1 + separatorSpacing;
+      if (y > pad && y + spacingBefore + hrHeight > bottom) {
+        pushPage();
+      } else {
+        y += spacingBefore;
+      }
+      current.push({ type: "hr", y: y + separatorSpacing });
+      y += hrHeight;
       continue;
     }
 
@@ -1475,11 +1497,39 @@ function layoutBlocks(blocks, baseFontSize, contentW, pad, lhMult = LH_DEFAULT, 
     const font = fontString(baseFontSize, block);
     const prepared = prepareWithSegments(block.text, font);
     const result = layoutWithLines(prepared, contentW, lh);
+    const lines = result.lines;
+    const blockHeight = lines.length * lh;
 
-    for (const line of result.lines) {
-      positioned.push({
+    const next = blocks[idx + 1];
+    const mb = next && (next.mt || next.type === "hr") ? 0 : block.mb;
+
+    // Keep-with-next: headers (section ## or item-title ###) should not be the
+    // last thing on a page. Require room for the header plus the first line of
+    // whatever follows; otherwise start the header on a fresh page.
+    const isHeader = block.bold && (block.fontScale === 0.85 || block.fontScale === 1);
+    let needed = spacingBefore + lh; // at minimum, the first line must fit
+    if (isHeader) {
+      let nextFirstLine = 0;
+      if (next && next.type !== "hr") {
+        nextFirstLine = baseFontSize * next.fontScale * lhMult;
+      }
+      needed = spacingBefore + blockHeight + nextFirstLine;
+    }
+
+    if (y > pad && y + needed > bottom) {
+      pushPage();
+    } else {
+      y += spacingBefore;
+    }
+
+    for (let li = 0; li < lines.length; li++) {
+      // Split very tall blocks (taller than a whole page) line-by-line.
+      if (y > pad && y + lh > bottom) {
+        pushPage();
+      }
+      current.push({
         type: "text",
-        text: line.text,
+        text: lines[li].text,
         x: pad,
         y,
         font,
@@ -1491,13 +1541,11 @@ function layoutBlocks(blocks, baseFontSize, contentW, pad, lhMult = LH_DEFAULT, 
       y += lh;
     }
 
-    // Skip mb if the next block has mt or is an hr (spacing is handled by them)
-    const next = blocks[idx + 1];
-    if (next && (next.mt || next.type === "hr")) continue;
-    y += block.mb;
+    y += mb;
   }
 
-  return positioned;
+  pages.push(current);
+  return pages;
 }
 
 /* ── Binary search for optimal font size + line height ────── */
@@ -1581,6 +1629,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [lineHeightMult, setLineHeightMult] = useState(LH_DEFAULT);
   const [maxFontSize, setMaxFontSize] = useState(FS_MAX_DEFAULT);
+  const [minFontSize, setMinFontSize] = useState(FS_MIN_DEFAULT);
   const [sectionSpacing, setSectionSpacing] = useState(18);
   const [itemSpacing, setItemSpacing] = useState(10);
   const [separatorSpacing, setSeparatorSpacing] = useState(16);
@@ -1595,6 +1644,7 @@ export default function App() {
   const [resumeJobTitleDraft, setResumeJobTitleDraft] = useState("");
   const pageRef = useRef(null);
   const previewRef = useRef(null);
+  const pageCountRef = useRef(1);
   const resumeMenuRef = useRef(null);
   const apiKeySaveToastTimeoutRef = useRef(null);
   const workHistorySaveToastTimeoutRef = useRef(null);
@@ -1721,18 +1771,30 @@ export default function App() {
     }));
   }, [activeModelOptions, llmSettings.model, llmSettings.provider, modelOptionsByProvider]);
 
+  const recomputeScale = useCallback(() => {
+    const el = previewRef.current;
+    if (!el) return;
+    const width = el.clientWidth;
+    const height = el.clientHeight;
+    const sx = width / PAGE_W;
+    const sy = height / PAGE_H;
+    // With a single page, fit the whole page (width and height). With several
+    // pages, fit to width and let the preview scroll vertically.
+    setPageScale(pageCountRef.current > 1 ? Math.min(sx, 1) : Math.min(sx, sy, 1));
+  }, []);
+
   useEffect(() => {
     const el = previewRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      const sx = width / PAGE_W;
-      const sy = height / PAGE_H;
-      setPageScale(Math.min(sx, sy, 1));
-    });
+    const ro = new ResizeObserver(() => recomputeScale());
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [recomputeScale]);
+
+  useEffect(() => {
+    pageCountRef.current = pageCount;
+    recomputeScale();
+  }, [pageCount, recomputeScale]);
 
   useEffect(() => {
     if (!isResumeMenuOpen) return;
@@ -1775,18 +1837,28 @@ export default function App() {
     };
   }, [blocks, fontSize, contentW, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing, ready]);
 
-  const positioned = useMemo(() => {
-    if (!ready) return [];
-    return layoutBlocks(blocks, fontSize, contentW, padding, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing);
-  }, [blocks, fontSize, contentW, padding, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing, ready]);
+  const pages = useMemo(() => {
+    if (!ready) return [[]];
+    return paginateBlocks(blocks, fontSize, contentW, padding, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing, maxH);
+  }, [blocks, fontSize, contentW, padding, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing, maxH, ready]);
+  const pageCount = pages.length;
 
   useEffect(() => {
     if (!ready || !autoFit) return;
     const { fontSize: optFs, lineHeightMult: optLh } = findOptimalFit(blocks, contentW, maxH, 6, 24, sectionSpacing, itemSpacing, separatorSpacing);
     const capped = Math.min(optFs, maxFontSize);
-    setFontSize(capped);
-    setLineHeightMult(optLh);
-  }, [blocks, padding, autoFit, ready, contentW, maxH, maxFontSize, sectionSpacing, itemSpacing, separatorSpacing]);
+    if (capped >= minFontSize) {
+      // Content fits one page at a readable size — fill the page as before.
+      setFontSize(capped);
+      setLineHeightMult(optLh);
+    } else {
+      // Too much content to fit one page without going below the floor.
+      // Hold the font at the floor and let it flow onto additional pages
+      // at a comfortable, fixed line height.
+      setFontSize(minFontSize);
+      setLineHeightMult(LH_DEFAULT);
+    }
+  }, [blocks, padding, autoFit, ready, contentW, maxH, maxFontSize, minFontSize, sectionSpacing, itemSpacing, separatorSpacing]);
 
   const handleSlider = (e) => {
     setAutoFit(false);
@@ -2337,97 +2409,76 @@ export default function App() {
   };
 
   const handleExportPdf = useCallback(() => {
-    const page = pageRef.current;
-    if (!page) return;
+    const pageEls = Array.from(document.querySelectorAll("[data-pagefit-page]"));
+    if (!pageEls.length) return;
 
-    const hiddenEls = [];
-    const ancestorSaved = [];
-    let current = page;
-    while (current.parentElement) {
-      const parent = current.parentElement;
-      Array.from(parent.children).forEach((sibling) => {
-        if (sibling !== current) {
-          hiddenEls.push({ el: sibling, prev: sibling.style.display });
-          sibling.style.display = "none";
-        }
-      });
-      if (parent !== document.body) {
-        ancestorSaved.push({
-          el: parent,
-          overflow: parent.style.overflow,
-          transform: parent.style.transform,
-          position: parent.style.position,
-          visibility: parent.style.visibility,
-          background: parent.style.background,
-        });
-        parent.style.overflow = "visible";
-        parent.style.transform = "none";
-        parent.style.visibility = "visible";
-        parent.style.background = "none";
-      }
-      current = parent;
-    }
+    const A4_W = 794; // A4 width in px at 96 DPI
+    const printScale = A4_W / PAGE_W;
+    const A4_H = Math.round(PAGE_H * printScale);
 
-    const pageSaved = {
-      position: page.style.position,
-      top: page.style.top,
-      left: page.style.left,
-      transform: page.style.transform,
-      transformOrigin: page.style.transformOrigin,
-      boxShadow: page.style.boxShadow,
-      background: page.style.background,
-    };
-    const printScale = 794 / PAGE_W;
-    page.style.position = "fixed";
-    page.style.top = "0";
-    page.style.left = "0";
-    page.style.transform = `scale(${printScale})`;
-    page.style.transformOrigin = "top left";
-    page.style.boxShadow = "none";
-    page.style.background = "white";
+    // Build an isolated print container with one A4-sized sheet per page.
+    // Cloning avoids disturbing the live React DOM and naturally supports
+    // any number of pages.
+    const printRoot = document.createElement("div");
+    printRoot.id = "pagefit-print-root";
+    pageEls.forEach((el) => {
+      const clone = el.cloneNode(true);
+      clone
+        .querySelectorAll("[data-margin-guide],[data-overflow],[data-page-number]")
+        .forEach((g) => g.remove());
+      clone.removeAttribute("ref");
+      clone.style.width = `${PAGE_W}px`;
+      clone.style.height = `${PAGE_H}px`;
+      clone.style.transform = `scale(${printScale})`;
+      clone.style.transformOrigin = "top left";
+      clone.style.boxShadow = "none";
+      clone.style.background = "white";
+      clone.style.position = "absolute";
+      clone.style.top = "0";
+      clone.style.left = "0";
 
-    const guides = page.querySelectorAll("[data-margin-guide],[data-overflow]");
-    guides.forEach((g) => (g.style.display = "none"));
+      const sheet = document.createElement("div");
+      sheet.className = "pagefit-print-page";
+      sheet.style.position = "relative";
+      sheet.style.width = `${A4_W}px`;
+      sheet.style.height = `${A4_H}px`;
+      sheet.style.overflow = "hidden";
+      sheet.appendChild(clone);
+      printRoot.appendChild(sheet);
+    });
+    document.body.appendChild(printRoot);
 
     const style = document.createElement("style");
     style.textContent = `
       @page { size: A4; margin: 0; }
-      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-      body::before { display: none !important; }
+      #pagefit-print-root { position: fixed; left: -10000px; top: 0; }
+      @media print {
+        body > *:not(#pagefit-print-root) { display: none !important; }
+        #pagefit-print-root { left: 0 !important; top: 0 !important; }
+        .pagefit-print-page { break-after: page; page-break-after: always; }
+        .pagefit-print-page:last-child { break-after: auto; page-break-after: auto; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        body::before { display: none !important; }
+      }
     `;
     document.head.appendChild(style);
-
-    const restore = () => {
-      style.remove();
-      guides.forEach((g) => (g.style.display = ""));
-      Object.assign(page.style, pageSaved);
-      ancestorSaved.forEach((s) => {
-        s.el.style.overflow = s.overflow;
-        s.el.style.transform = s.transform;
-        s.el.style.position = s.position;
-        s.el.style.visibility = s.visibility;
-        s.el.style.background = s.background;
-        s.el.style.display = s.display;
-      });
-      hiddenEls.forEach((h) => (h.el.style.display = h.prev));
-      window.onafterprint = null;
-    };
 
     const savedTitle = document.title;
     const nameMatch = markdown.match(/^# (.+)/m);
     document.title = nameMatch ? `${nameMatch[1]} Resume` : "Resume";
 
-    const origRestore = restore;
-    const restoreWithTitle = () => {
-      origRestore();
+    const restore = () => {
+      style.remove();
+      printRoot.remove();
       document.title = savedTitle;
+      window.onafterprint = null;
     };
-    window.onafterprint = restoreWithTitle;
+    window.onafterprint = restore;
     window.print();
   }, [markdown]);
 
-  const fits = measuredHeight <= maxH;
-  const pct = Math.min((measuredHeight / maxH) * 100, 100);
+  const totalCapacity = maxH * pageCount;
+  const pct = totalCapacity > 0 ? Math.min((measuredHeight / totalCapacity) * 100, 100) : 0;
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -3307,78 +3358,95 @@ export default function App() {
             )}
           </div>
 
-          <div ref={previewRef} className="flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
+          <div ref={previewRef} className="flex-1 min-h-0 min-w-0 overflow-auto">
             <div
-              ref={pageRef}
-              data-pagefit-page
-              className="relative bg-white shadow-2xl shadow-black/50 shrink-0"
+              className="flex flex-col items-center"
               style={{
-                width: PAGE_W,
-                height: PAGE_H,
-                overflow: "hidden",
-                transform: `scale(${pageScale})`,
-                transformOrigin: "center center",
+                gap: PAGE_GAP * pageScale,
+                paddingTop: PAGE_GAP * pageScale,
+                paddingBottom: PAGE_GAP * pageScale,
               }}
             >
-              {positioned.map((item, i) => {
-                if (item.type === "hr") {
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        position: "absolute",
-                        left: padding,
-                        right: padding,
-                        top: item.y,
-                        height: 1,
-                        backgroundColor: "#ddd",
-                      }}
-                    />
-                  );
-                }
-                return (
+              {pages.map((items, p) => (
+                // Wrapper reserves the scaled footprint so stacked pages don't overlap.
+                <div
+                  key={p}
+                  className="relative shrink-0"
+                  style={{ width: PAGE_W * pageScale, height: PAGE_H * pageScale }}
+                >
                   <div
-                    key={i}
+                    ref={p === 0 ? pageRef : undefined}
+                    data-pagefit-page
+                    data-page-index={p}
+                    className="absolute top-0 left-0 bg-white shadow-2xl shadow-black/50"
                     style={{
-                      position: "absolute",
-                      left: item.x,
-                      top: item.y,
-                      fontSize: item.fontSize,
-                      fontWeight: item.fontWeight,
-                      fontFamily: FONT,
-                      lineHeight: `${item.lineHeight}px`,
-                      color: item.color,
-                      whiteSpace: "pre",
+                      width: PAGE_W,
+                      height: PAGE_H,
+                      overflow: "hidden",
+                      transform: `scale(${pageScale})`,
+                      transformOrigin: "top left",
                     }}
                   >
-                    {item.text}
+                    {items.map((item, i) => {
+                      if (item.type === "hr") {
+                        return (
+                          <div
+                            key={i}
+                            style={{
+                              position: "absolute",
+                              left: padding,
+                              right: padding,
+                              top: item.y,
+                              height: 1,
+                              backgroundColor: "#ddd",
+                            }}
+                          />
+                        );
+                      }
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            position: "absolute",
+                            left: item.x,
+                            top: item.y,
+                            fontSize: item.fontSize,
+                            fontWeight: item.fontWeight,
+                            fontFamily: FONT,
+                            lineHeight: `${item.lineHeight}px`,
+                            color: item.color,
+                            whiteSpace: "pre",
+                          }}
+                        >
+                          {item.text}
+                        </div>
+                      );
+                    })}
+
+                    <div
+                      data-margin-guide
+                      className="absolute pointer-events-none"
+                      style={{
+                        top: padding,
+                        left: padding,
+                        right: padding,
+                        bottom: padding,
+                        border: "1px dashed rgba(0,0,0,0.12)",
+                      }}
+                    />
+
+                    {pageCount > 1 && (
+                      <div
+                        data-page-number
+                        className="absolute pointer-events-none text-neutral-400"
+                        style={{ bottom: padding / 2, right: padding, fontSize: 9, fontFamily: FONT }}
+                      >
+                        {p + 1} / {pageCount}
+                      </div>
+                    )}
                   </div>
-                );
-              })}
-
-              <div
-                data-margin-guide
-                className="absolute pointer-events-none"
-                style={{
-                  top: padding,
-                  left: padding,
-                  right: padding,
-                  bottom: padding,
-                  border: "1px dashed rgba(0,0,0,0.12)",
-                }}
-              />
-
-              {!fits && (
-                <div
-                  data-overflow
-                  className="absolute bottom-0 left-0 right-0 pointer-events-none"
-                  style={{
-                    height: 48,
-                    background: "linear-gradient(transparent, rgba(248,113,113,0.18))",
-                    borderBottom: "2px solid rgb(248,113,113)",
-                  }}
-                />
-              )}
+                </div>
+              ))}
             </div>
           </div>
 
@@ -3462,6 +3530,33 @@ export default function App() {
               />
               <span className="text-sm font-mono tabular-nums w-16 text-right">
                 {maxFontSize}px
+              </span>
+            </div>
+          </div>
+
+          {/* Min Font Size (auto-fit floor) */}
+          <div>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <p className="text-xs text-neutral-500 uppercase tracking-widest">
+                Min Font Size
+              </p>
+              <span className="relative group/tip">
+                <span className="w-3.5 h-3.5 rounded-full border border-neutral-600 text-neutral-500 text-[9px] font-medium flex items-center justify-center cursor-default">i</span>
+                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 text-xs text-neutral-300 bg-neutral-800 border border-neutral-700 rounded-md w-48 opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity">Auto-fit won't shrink below this. When content can't fit one page at this size, it flows onto additional pages instead.</span>
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={6}
+                max={16}
+                step={0.5}
+                value={minFontSize}
+                onChange={(e) => setMinFontSize(parseFloat(e.target.value))}
+                className="flex-1 h-1 accent-white"
+              />
+              <span className="text-sm font-mono tabular-nums w-16 text-right">
+                {minFontSize}px
               </span>
             </div>
           </div>
@@ -3620,16 +3715,16 @@ export default function App() {
                 className="h-full rounded-full transition-all duration-100"
                 style={{
                   width: `${pct}%`,
-                  backgroundColor: fits ? "rgb(52, 211, 153)" : "rgb(248, 113, 113)",
+                  backgroundColor: "rgb(52, 211, 153)",
                 }}
               />
             </div>
             <div className="flex items-baseline justify-between text-xs">
-              <span className={`font-medium ${fits ? "text-emerald-400" : "text-red-400"}`}>
-                {fits ? "Fits on 1 page" : `Overflow +${measuredHeight - maxH}px`}
+              <span className="font-medium text-emerald-400">
+                {pageCount === 1 ? "Fits on 1 page" : `${pageCount} pages`}
               </span>
               <span className="text-neutral-600 font-mono tabular-nums">
-                {measuredHeight}/{maxH}px · {measureTime}ms
+                {measuredHeight}/{totalCapacity}px · {measureTime}ms
               </span>
             </div>
           </div>
