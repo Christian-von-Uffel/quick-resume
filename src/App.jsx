@@ -170,6 +170,22 @@ export default function App() {
   }, [theme]);
 
   const sortedWorkHistory = useMemo(() => sortWorkHistory(workHistory), [workHistory]);
+
+  // Plain-language reasons an action is gated, surfaced as inline hints + tooltips
+  // so users know what to fix instead of facing a silently disabled button. Each
+  // is "" when the action is ready (or merely busy, which the button label shows).
+  const hasJobDescription = generationInstructions.trim().length > 0;
+  const generateDisabledReason = !hasJobDescription
+    ? "Paste a job description above to generate a resume."
+    : "";
+  const findMissingDisabledReason =
+    sortedWorkHistory.length === 0
+      ? "Add work history first, then paste a job description above."
+      : !hasJobDescription
+        ? "Paste a job description above to compare it against your work history."
+        : "";
+  const scrapeDisabledReason = !scrapeUrl.trim() ? "Enter a job page URL to scrape it." : "";
+
   const visibleWorkHistory = useMemo(() => {
     const normalized = workHistorySearch.trim().toLowerCase();
     if (!normalized) return sortedWorkHistory;
@@ -1701,6 +1717,7 @@ export default function App() {
                           type="button"
                           onClick={handleScrapeJobPage}
                           disabled={isScraping || !scrapeUrl.trim()}
+                          title={scrapeDisabledReason || undefined}
                           className="w-full sm:w-auto rounded-lg border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:text-neutral-50 disabled:cursor-not-allowed disabled:opacity-50 h-[38px] flex items-center justify-center gap-1.5"
                         >
                           {isScraping ? (
@@ -1717,6 +1734,10 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+
+                    {!isScraping && scrapeDisabledReason && (
+                      <p className="text-xs text-neutral-500">{scrapeDisabledReason}</p>
+                    )}
 
                     {scrapeError && (
                       <p className="text-xs text-red-400 font-medium">
@@ -1778,10 +1799,14 @@ export default function App() {
                   type="button"
                   onClick={handleFindMissingExperienceDetails}
                   disabled={isFindingMissingExperience || !generationInstructions.trim() || sortedWorkHistory.length === 0}
+                  title={findMissingDisabledReason || undefined}
                   className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isFindingMissingExperience ? "Analyzing work history..." : "Find missing experience"}
                 </button>
+                {!isFindingMissingExperience && findMissingDisabledReason && (
+                  <p className="mt-2 text-xs text-neutral-500">{findMissingDisabledReason}</p>
+                )}
                 {missingExperienceStatus && (
                   <p className="mt-3 text-sm text-neutral-400">
                     {missingExperienceStatus}
@@ -1948,7 +1973,9 @@ export default function App() {
                 <p className="mt-1 text-sm text-neutral-500">
                   {sortedWorkHistory.length === 0
                     ? "Add work history first so the generator has real experience to choose from."
-                    : "Uses your profile, global work history, model settings, and the job description above."}
+                    : !generationInstructions.trim()
+                      ? "Paste the job description above so the generator can tailor the resume to it."
+                      : "Uses your profile, global work history, model settings, and the job description above."}
                 </p>
                 {sortedWorkHistory.length === 0 ? (
                   <button
@@ -1962,7 +1989,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleGenerateMarkdown}
-                    disabled={isGenerating}
+                    disabled={isGenerating || !generationInstructions.trim()}
+                    title={generateDisabledReason || undefined}
                     className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isGenerating ? "Generating..." : "Generate resume"}

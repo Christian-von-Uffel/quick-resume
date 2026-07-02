@@ -269,7 +269,9 @@ function unionFind(size) {
 // promotion path reads as a single row of segments, not an overlap stack — and
 // only genuinely different, concurrent employers split into separate lanes.
 // Non-overlapping employers fill the full height; overlapping ones split it.
-// Within a stack, the most recent tenure is placed on top (lane 0).
+// Within a stack, the most recent tenure is placed on top (lane 0). Each placed
+// role also carries an `employerId` (shared by all roles at the same company) so
+// the renderer can group them into a single block.
 export function assignLaneGroups(intervals) {
   const dated = [...intervals].filter((iv) => iv.dated);
   if (dated.length === 0) return { placed: [], maxGroupLanes: 1 };
@@ -285,7 +287,7 @@ export function assignLaneGroups(intervals) {
   const employers = new Map();
   dated.forEach((iv, i) => {
     const key = roleUF.find(i);
-    if (!employers.has(key)) employers.set(key, { start: iv.start, end: iv.end, roleIndexes: [] });
+    if (!employers.has(key)) employers.set(key, { key, start: iv.start, end: iv.end, roleIndexes: [] });
     const emp = employers.get(key);
     emp.start = Math.min(emp.start, iv.start);
     emp.end = Math.max(emp.end, iv.end);
@@ -344,7 +346,7 @@ export function assignLaneGroups(intervals) {
   const laneByRole = new Map();
   for (const emp of empList) {
     for (const roleIndex of emp.roleIndexes) {
-      laneByRole.set(roleIndex, { lane: emp.lane, groupLanes: emp.groupLanes });
+      laneByRole.set(roleIndex, { lane: emp.lane, groupLanes: emp.groupLanes, employerId: emp.key });
     }
   }
   const placed = dated

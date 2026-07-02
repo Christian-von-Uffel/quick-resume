@@ -24,36 +24,39 @@ const ROLE_COLORS = [
 
 const LANE_HEIGHT = 20; // minimum height of a single stacked lane
 const LANE_GAP = 3; // vertical gap between stacked overlapping roles
+const BLOCK_GAP = 1.5; // px inset per side, so back-to-back blocks show a hairline gap
 const CLOSE_DELAY_MS = 140;
 
 function yearOf(monthIndex) {
   return Math.floor(monthIndex / 12);
 }
 
-// Build year-boundary ticks, then thin them by on-screen position so the axis
-// never crowds — important for the recency scale, where old years bunch up.
+// Build one label per year, positioned at that year's START (its January-1
+// boundary) on the axis. The axis runs recent→old, so a year's start sits on its
+// right/older edge. Ticks are then thinned by on-screen distance so the recency
+// scale, where old years bunch up on the right, never crowds. (We drop no extra
+// end tick, so the newest year sits at its own boundary rather than clamping to
+// the left edge.)
 function buildAxisTicks(domainStart, domainEnd, scalePos) {
   const ticks = [];
   for (let year = yearOf(domainStart); year <= yearOf(domainEnd); year += 1) {
-    ticks.push(year * 12);
+    const pos = Math.min(100, Math.max(0, scalePos(year * 12)));
+    ticks.push({ year, pos });
   }
-  ticks.push(domainEnd);
-  const positioned = ticks
-    .map((index) => ({ index, pos: scalePos(index), year: yearOf(index) }))
-    .sort((a, b) => a.pos - b.pos);
+  ticks.sort((a, b) => a.pos - b.pos);
 
   const kept = [];
-  for (const tick of positioned) {
+  for (const tick of ticks) {
     const last = kept[kept.length - 1];
     if (!last || tick.pos - last.pos >= 6.5) kept.push(tick);
   }
-  // De-dupe repeated year labels that survived thinning.
-  return kept.filter((tick, i) => i === 0 || tick.year !== kept[i - 1].year);
+  return kept;
 }
 
 export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRole, onAddPosition }) {
   const [active, setActive] = useState(null);
   const [ctaVisible, setCtaVisible] = useState(false);
+  const [hoverYear, setHoverYear] = useState(null); // year whose gridline is shown
   const [scaleMode, setScaleMode] = useState("recency"); // "recency" | "linear"
   const closeTimer = useRef(null);
   const rootRef = useRef(null);
@@ -126,7 +129,81 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
   };
 
   const axisTicks = buildAxisTicks(domainStart, domainEnd, scalePos);
+  const hoverTick = hoverYear == null ? null : axisTicks.find((t) => t.year === hoverYear);
   const trailingGap = gaps.find((gap) => gap.toPresent);
+
+  // Group positions by employer so multiple titles at one company render as a
+  // single colored block, with a divider seam at each promotion / internal
+  // switch, instead of separate blocks. Colors are per-employer, assigned in
+  // chronological order (placed is already start-sorted). A real >1-month gap
+  // between two tenures at the same company still breaks into separate blocks.
+  const employerOrder = [];
+  const employerRoles = new Map();
+  for (const role of placed) {
+    if (!employerRoles.has(role.employerId)) {
+      employerRoles.set(role.employerId, []);
+      employerOrder.push(role.employerId);
+    }
+    employerRoles.get(role.employerId).push(role);
+  }
+  const employerColor = new Map(
+    employerOrder.map((id, i) => [id, ROLE_COLORS[i % ROLE_COLORS.length]])
+  );
+
+  const companyBlocks = []; // one colored block per contiguous run of positions
+  const roleSeams = []; // divider lines at internal promotions/switches
+  const roleHits = []; // transparent per-position hover/edit targets
+  for (const employerId of employerOrder) {
+    const roles = employerRoles.get(employerId);
+    const color = employerColor.get(employerId);
+    const { lane, groupLanes } = roles[0];
+    const height = roleHeight(groupLanes);
+    const top = lane * (height + LANE_GAP);
+
+    let run = [];
+    let runMaxEnd = -Infinity;
+    const flushRun = () => {
+      if (run.length === 0) return;
+      const { left, width } = box(run[0].start, runMaxEnd);
+      companyBlocks.push({ key: `emp-${employerId}-${run[0].start}`, color, left, width, top, height });
+      for (let k = 1; k < run.length; k += 1) {
+        roleSeams.push({
+          key: `seam-${run[k].id}`,
+          pos: Math.min(100, Math.max(0, scalePos(run[k].start))),
+          top,
+          height,
+        });
+      }
+      run = [];
+      runMaxEnd = -Infinity;
+    };
+    for (const role of roles) {
+      if (run.length && role.start > runMaxEnd + 1) flushRun();
+      run.push(role);
+      runMaxEnd = Math.max(runMaxEnd, role.end);
+    }
+    flushRun();
+
+    for (const role of roles) {
+      const { left, width } = box(role.start, role.end);
+      roleHits.push({
+        role,
+        left,
+        width,
+        top,
+        height,
+        popup: {
+          tone: "role",
+          color,
+          roleId: role.id,
+          label: [role.position, role.company].filter(Boolean).join(" — ") || "Role",
+          sublabel: `${monthIndexToLabel(role.start)} — ${role.ongoing ? "Present" : monthIndexToLabel(role.end)} · ${formatMonthSpan(role.end - role.start + 1)}`,
+          leftPct: left + width / 2,
+          topPx: top,
+        },
+      });
+    }
+  }
 
   const runAction = () => {
     if (!active) return;
@@ -191,6 +268,15 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
 
       {/* Chart band. Popup can extend past the card (see whitespace-nowrap below). */}
       <div className="relative" style={{ height: bandHeight }}>
+        {/* Vertical gridline at the hovered year's start, dropped straight down
+            from its label so it's easy to read which roles/gaps that year spans. */}
+        {hoverTick && (
+          <div
+            className="pointer-events-none absolute top-0 z-20 w-px bg-neutral-300/70"
+            style={{ left: `${Math.min(100, Math.max(0, hoverTick.pos))}%`, height: bandHeight }}
+          />
+        )}
+
         {/* Gap bands sit behind the role blocks, span the full height, and butt
             right up against the neighboring roles (no min-width, no dead space). */}
         {gaps.map((gap, index) => {
@@ -225,40 +311,54 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
           );
         })}
 
-        {/* Role blocks — full height when alone, split into lanes only when they
-            overlap another role in time. */}
-        {placed.map((role, index) => {
-          const color = ROLE_COLORS[index % ROLE_COLORS.length];
-          const { left, width } = box(role.start, role.end);
-          const height = roleHeight(role.groupLanes);
-          const topPx = role.lane * (height + LANE_GAP);
-          const popup = {
-            tone: "role",
-            color,
-            roleId: role.id,
-            label: [role.position, role.company].filter(Boolean).join(" — ") || "Role",
-            sublabel: `${monthIndexToLabel(role.start)} — ${role.ongoing ? "Present" : monthIndexToLabel(role.end)} · ${formatMonthSpan(role.end - role.start + 1)}`,
-            leftPct: left + width / 2,
-            topPx,
-          };
-          return (
-            <div
-              key={role.id}
-              className="absolute cursor-pointer rounded-[3px] shadow-sm ring-1 ring-black/10 transition-[filter] hover:brightness-110"
-              style={{
-                left: `${left}%`,
-                width: `${width}%`,
-                minWidth: 6,
-                top: topPx,
-                height,
-                background: color,
-              }}
-              onMouseEnter={() => openPopup(popup)}
-              onMouseLeave={scheduleClose}
-              onClick={() => openPopup(popup)}
-            />
-          );
-        })}
+        {/* Company blocks — one per contiguous run of positions at the same
+            employer, so promotions/switches read as a single block rather than
+            separate colored bars. Full height when alone, split into lanes only
+            when a concurrent employer overlaps in time. */}
+        {companyBlocks.map((b) => (
+          <div
+            key={b.key}
+            className="pointer-events-none absolute rounded-[3px] shadow-sm ring-1 ring-black/10"
+            style={{
+              left: `calc(${b.left}% + ${BLOCK_GAP}px)`,
+              width: `calc(${b.width}% - ${BLOCK_GAP * 2}px)`,
+              minWidth: 4,
+              top: b.top,
+              height: b.height,
+              background: b.color,
+            }}
+          />
+        ))}
+
+        {/* Semitransparent seams marking a promotion or position switch within a
+            company (the boundary between two adjacent titles). */}
+        {roleSeams.map((s) => (
+          <div
+            key={s.key}
+            className="pointer-events-none absolute z-10 rounded-full"
+            style={{
+              left: `${s.pos}%`,
+              top: s.top + 2,
+              height: Math.max(2, s.height - 4),
+              width: 2,
+              transform: "translateX(-1px)",
+              background: "rgba(255,255,255,0.55)",
+            }}
+          />
+        ))}
+
+        {/* Transparent hit areas — one per position — carry hover/edit and
+            highlight just the hovered segment inside its company block. */}
+        {roleHits.map(({ role, left, width, top, height, popup }) => (
+          <div
+            key={role.id}
+            className="absolute z-10 cursor-pointer rounded-[3px] transition-colors hover:bg-white/10"
+            style={{ left: `${left}%`, width: `${width}%`, minWidth: 6, top, height }}
+            onMouseEnter={() => openPopup(popup)}
+            onMouseLeave={scheduleClose}
+            onClick={() => openPopup(popup)}
+          />
+        ))}
 
         {/* Floating popup — width follows its content and may extend past the card.
             The action line ("Edit"/"Add") reveals only while the popup is hovered. */}
@@ -294,13 +394,17 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
         )}
       </div>
 
-      {/* Year axis — most recent on the left */}
+      {/* Year axis — most recent on the left. Hover a year to drop a gridline. */}
       <div className="relative mt-1 h-4 border-t border-neutral-800">
         {axisTicks.map((tick) => (
           <span
-            key={tick.index}
-            className="absolute top-1 -translate-x-1/2 text-[10px] text-neutral-500"
+            key={tick.year}
+            className={`absolute top-1 -translate-x-1/2 cursor-default text-[10px] tabular-nums transition-colors ${
+              hoverYear === tick.year ? "text-neutral-200" : "text-neutral-500 hover:text-neutral-300"
+            }`}
             style={{ left: `${Math.min(100, Math.max(0, tick.pos))}%` }}
+            onMouseEnter={() => setHoverYear(tick.year)}
+            onMouseLeave={() => setHoverYear(null)}
           >
             {tick.year}
           </span>
