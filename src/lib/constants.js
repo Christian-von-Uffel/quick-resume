@@ -1,0 +1,117 @@
+/* ── Page constants ────────────────────────────────────────── */
+export const PAGE_W = 620;
+export const PAGE_H = Math.round(PAGE_W * (297 / 210));
+export const DEFAULT_PAD = 40;
+export const FONT = "InterVariable, sans-serif";
+export const LH_MIN = 1.15;
+export const LH_MAX = 1.8;
+export const LH_DEFAULT = 1.5;
+export const FS_MAX_DEFAULT = 14;
+export const STORAGE_KEY = "quick-resume:v1";
+export const PROFILE_EXPORT_VERSION = 1;
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+
+export const LLM_PROVIDERS = [
+  ["gemini", "Google"],
+  ["openai", "OpenAI"],
+  ["anthropic", "Anthropic"],
+];
+
+export const OPENAI_MODEL_OPTIONS = [
+  ["gpt-5.5", "gpt-5.5"],
+  ["gpt-5.4", "gpt-5.4"],
+  ["gpt-5.4-mini", "gpt-5.4-mini"],
+  ["gpt-5.4-nano", "gpt-5.4-nano"],
+];
+
+export const FALLBACK_MODEL_OPTIONS = {
+  gemini: [
+    ["gemini-3.5-flash", "gemini-3.5-flash"],
+    ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
+    ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite"],
+  ],
+  openai: OPENAI_MODEL_OPTIONS,
+  anthropic: [
+    ["claude-fable-5", "claude-fable-5"],
+    ["claude-opus-4-8", "claude-opus-4-8"],
+    ["claude-sonnet-4-6", "claude-sonnet-4-6"],
+    ["claude-haiku-4-5", "claude-haiku-4-5"],
+  ],
+};
+
+export const CONTACT_FIELDS = [
+  ["location", "Location"],
+  ["email", "Email"],
+  ["phone", "Phone"],
+  ["linkedin", "LinkedIn"],
+  ["github", "GitHub"],
+  ["website", "Website"],
+];
+
+export const DEFAULT_VISIBLE_CONTACT_FIELDS = ["location", "email", "linkedin", "github", "website"];
+
+export const DEFAULT_PROFILE = {
+  name: "",
+  headline: "",
+  location: "",
+  email: "",
+  phone: "",
+  linkedin: "",
+  github: "",
+  website: "",
+  visibleContactFields: DEFAULT_VISIBLE_CONTACT_FIELDS,
+  education: [],
+};
+
+export const DEFAULT_LLM_SETTINGS = {
+  provider: "gemini",
+  model: DEFAULT_GEMINI_MODEL,
+  geminiApiKey: "",
+  openaiApiKey: "",
+  anthropicApiKey: "",
+  firecrawlApiKey: "",
+  rememberApiKey: true,
+};
+
+export const MONTH_OPTIONS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+export const MONTH_SELECT_OPTIONS = MONTH_OPTIONS.map((label, index) => [
+  String(index + 1).padStart(2, "0"),
+  label,
+]);
+
+export const EMPTY_POSITION_DRAFT = {
+  position: "",
+  company: "",
+  startMonth: "",
+  startYear: "",
+  endMonth: "",
+  endYear: "",
+};
+
+export const MONTH_NAME_TO_NUM = MONTH_OPTIONS.reduce((acc, month, index) => {
+  const num = String(index + 1).padStart(2, "0");
+  acc[month.toLowerCase()] = num;
+  acc[month.slice(0, 3).toLowerCase()] = num;
+  return acc;
+}, {});
+
+for (let month = 1; month <= 12; month += 1) {
+  MONTH_NAME_TO_NUM[String(month)] = String(month).padStart(2, "0");
+  MONTH_NAME_TO_NUM[String(month).padStart(2, "0")] = String(month).padStart(2, "0");
+}
