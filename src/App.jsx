@@ -1311,12 +1311,12 @@ Generate polished resume markdown for the current resume builder from curated fi
 
 <format>
 # ${profile.name || "Your Name"}
-${profile.headline || jobTitle || "Job Title"}
+[Professional title — see title instructions]
 ${getVisibleContactLine(profile)}
 
 ---
 
-Brief summary.
+[Professional summary — see summary instructions]
 
 ## EXPERIENCE
 
@@ -1352,6 +1352,18 @@ Use only the selected resume evidence and profile. Do not include excluded work 
 Write to show straightforward fit for the target role, not generic impressiveness.
 Prefer measurable, plain-language bullets. Do not invent employers, dates, schools, tools, metrics, or responsibilities not present in the provided data.
 Work history dates are stored as numeric months ("01"-"12") and years ("2020", or "present"). Format them for the resume as readable ranges like "March 2020 — Present".
+
+Professional title (the line directly under the name):
+- Mirror the target role in the job description so a recruiter or ATS instantly sees a match. When the candidate's background genuinely supports it, use the exact role title from the job description.
+- Keep it a concise title, not a sentence. An optional short qualifier is fine (e.g. "Senior Product Manager — B2B SaaS & Growth").
+- Ground it in the candidate's real experience; never claim a level or specialty the selected evidence does not support.${profile.headline ? `\n- The candidate's saved headline is "${profile.headline}". Use it as a starting point and adapt it toward the target role.` : ""}
+- If no job description is provided, use ${profile.headline || jobTitle ? `"${profile.headline || jobTitle}"` : "a concise professional title drawn from the strongest, most recent experience"}.
+
+Professional summary (the line under the divider):
+- Write 2-3 sentences positioned as a pitch for this specific role, not a generic bio.
+- Lead with the candidate's fit for the target title, then weave in the requirements, skills, and keywords from the job description that the candidate genuinely meets — matching the job's own wording where truthful, so it passes both recruiter scanning and ATS keyword matching.
+- Anchor it with one or two of the strongest, most relevant achievements from the selected evidence, with real metrics where available.
+- Only mirror job-description language the candidate can actually back up with the selected evidence and profile. Do not invent qualifications, years of experience, tools, or outcomes.
 </instructions>`;
 }
 
