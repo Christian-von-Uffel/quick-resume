@@ -578,6 +578,8 @@ async function fetchAllAnthropicModels(apiKey) {
       headers: {
         "x-api-key": apiKey.trim(),
         "anthropic-version": "2023-06-01",
+        // Anthropic blocks browser origins by default; this header opts into CORS.
+        "anthropic-dangerous-direct-browser-access": "true",
       },
     });
     const data = await response.json();
@@ -619,9 +621,19 @@ async function fetchAnthropicModelOptions(apiKey) {
 }
 
 async function fetchProviderModelOptions(provider, apiKey) {
-  if (provider === "openai") return fetchOpenAIModelOptions(apiKey);
-  if (provider === "anthropic") return fetchAnthropicModelOptions(apiKey);
-  return fetchGeminiModelOptions(apiKey);
+  const key = sanitizeApiKey(apiKey);
+  if (provider === "openai") return fetchOpenAIModelOptions(key);
+  if (provider === "anthropic") return fetchAnthropicModelOptions(key);
+  return fetchGeminiModelOptions(key);
+}
+
+// API keys are sent as HTTP header values, which must be Latin-1. Pasted keys
+// sometimes carry invisible or non-ASCII characters (smart quotes, zero-width
+// spaces, non-breaking spaces) that survive .trim() and make fetch throw
+// "String contains non ISO-8859-1 code point" before the request is sent.
+// Provider keys are always printable ASCII, so strip anything else.
+function sanitizeApiKey(key) {
+  return (key ?? "").replace(/[^\x20-\x7E]/g, "").trim();
 }
 
 function getApiKeyForProvider(settings) {
@@ -998,11 +1010,32 @@ function readFileAsText(file) {
   });
 }
 
-// Some models reject optional sampling parameters (e.g. OpenAI's reasoning
-// models don't accept `temperature`). Rather than maintain a per-model
-// allowlist, POST the request and, if the API rejects a parameter as
-// unsupported, drop that parameter and retry. This keeps a single code path
-// working across providers and future models.
+// Optional sampling params that some models reject: OpenAI's reasoning models
+// don't accept `temperature`, and Anthropic removed `temperature`/`top_p`/`top_k`
+// on its newer models (Opus 4.8, Fable 5, ...) — sending them there returns a 400.
+const DROPPABLE_MODEL_PARAMS = ["temperature", "top_p", "top_k"];
+
+// Find a parameter the API rejected so we can drop it and retry. Handles both
+// OpenAI's quoted phrasing ("Unsupported parameter: 'temperature' ...") and
+// Anthropic's less structured 400, which names the field without a fixed format.
+function getUnsupportedParam(message, body) {
+  const quoted = /unsupported parameter|not supported with this model/i.test(message)
+    ? message.match(/'([^']+)'/)?.[1] ?? null
+    : null;
+  if (quoted && Object.prototype.hasOwnProperty.call(body, quoted)) return quoted;
+
+  return (
+    DROPPABLE_MODEL_PARAMS.find(
+      (param) =>
+        Object.prototype.hasOwnProperty.call(body, param) &&
+        new RegExp(`\\b${param}\\b`, "i").test(message)
+    ) ?? null
+  );
+}
+
+// Rather than maintain a per-model allowlist, POST the request and, if the API
+// rejects a parameter as unsupported, drop that parameter and retry. This keeps
+// a single code path working across providers and future models.
 async function postModelJson(url, headers, body, fallbackMessage) {
   let attempt = { ...body };
 
@@ -1018,11 +1051,9 @@ async function postModelJson(url, headers, body, fallbackMessage) {
     if (response.ok) return data;
 
     const message = data.error?.message ?? "";
-    const unsupportedParam = /unsupported parameter|not supported with this model/i.test(message)
-      ? message.match(/'([^']+)'/)?.[1] ?? null
-      : null;
+    const unsupportedParam = getUnsupportedParam(message, attempt);
 
-    if (unsupportedParam && Object.prototype.hasOwnProperty.call(attempt, unsupportedParam)) {
+    if (unsupportedParam) {
       const { [unsupportedParam]: _removed, ...rest } = attempt;
       attempt = rest;
       continue;
@@ -1109,10 +1140,17 @@ async function callAnthropic({ apiKey, model, prompt, file }) {
     {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
+      // Anthropic blocks browser origins by default; this header opts into CORS.
+      "anthropic-dangerous-direct-browser-access": "true",
     },
     {
       model,
-      max_tokens: 8192,
+      // Well under every offered model's output cap (haiku/sonnet 64K, opus/fable
+      // 128K) while staying small enough to avoid non-streaming HTTP timeouts.
+      max_tokens: 16000,
+      // Rejected with a 400 on newer models (Opus 4.8, Fable 5); postModelJson
+      // drops it and retries when that happens, so it's kept for the models
+      // (Sonnet 4.6, Haiku 4.5) that still accept it.
       temperature: 0.2,
       messages: [{ role: "user", content }],
     },
@@ -1123,7 +1161,7 @@ async function callAnthropic({ apiKey, model, prompt, file }) {
 }
 
 async function callLlm(settings, prompt, file) {
-  const apiKey = getApiKeyForProvider(settings).trim();
+  const apiKey = sanitizeApiKey(getApiKeyForProvider(settings));
   if (!apiKey) {
     throw new Error(`Add a ${getProviderLabel(settings.provider)} API key before calling the model.`);
   }
@@ -1138,6 +1176,25 @@ async function callLlm(settings, prompt, file) {
   if (settings.provider === "openai") return callOpenAI(request);
   if (settings.provider === "anthropic") return callAnthropic(request);
   return callGemini(request);
+}
+
+// Call the model and parse its response as JSON. Models occasionally wrap the
+// object in prose or emit a stray token that breaks a strict parse; when that
+// happens, hand the model its own output back once and ask for clean JSON before
+// giving up. The file (if any) isn't resent on retry — only the text needs fixing.
+async function callLlmForJson(settings, prompt, file) {
+  const text = await callLlm(settings, prompt, file);
+  try {
+    return extractJson(text);
+  } catch {
+    const repairPrompt = `The following response was supposed to be a single valid JSON object but could not be parsed. Return only the corrected JSON object, with no markdown fences, comments, or surrounding text.
+
+<invalid_response>
+${text}
+</invalid_response>`;
+    const repaired = await callLlm(settings, repairPrompt, null);
+    return extractJson(repaired);
+  }
 }
 
 function importResume() {
@@ -2214,9 +2271,9 @@ export default function App() {
     setScrapeError("");
     setScrapeSuccess("");
 
-    let firecrawlKey = apiKeyDrafts.firecrawl?.trim() || llmSettings.firecrawlApiKey?.trim();
-    if (!firecrawlKey && apiKeyDrafts.firecrawl?.trim()) {
-      firecrawlKey = apiKeyDrafts.firecrawl.trim();
+    let firecrawlKey = sanitizeApiKey(apiKeyDrafts.firecrawl) || sanitizeApiKey(llmSettings.firecrawlApiKey);
+    if (!firecrawlKey && sanitizeApiKey(apiKeyDrafts.firecrawl)) {
+      firecrawlKey = sanitizeApiKey(apiKeyDrafts.firecrawl);
       setLlmSettings((current) => applyApiKeyDrafts(current, apiKeyDrafts));
     }
 
@@ -2317,12 +2374,12 @@ export default function App() {
     setMissingExperienceStatus("Looking for useful details that are missing from your work history...");
 
     try {
-      const text = await callLlm(
+      const parsed = await callLlmForJson(
         applyApiKeyDrafts(llmSettings, apiKeyDrafts),
         findMissingExperience({ workHistory, jobDescription }),
         null
       );
-      const details = validateMissingExperienceDetails(extractJson(text));
+      const details = validateMissingExperienceDetails(parsed);
       setMissingExperienceDetails(details);
       setConfirmedMissingExperienceSkills([]);
       setDismissedMissingExperienceSkills([]);
@@ -2579,12 +2636,11 @@ export default function App() {
     try {
       const base64 = await readFileAsBase64(file);
       setImportStatus("Asking the model to extract profile and work history...");
-      const text = await callLlm(applyApiKeyDrafts(llmSettings, apiKeyDrafts), importResume(), {
+      const imported = await callLlmForJson(applyApiKeyDrafts(llmSettings, apiKeyDrafts), importResume(), {
         name: file.name,
         mimeType: file.type || "application/octet-stream",
         base64,
       });
-      const imported = extractJson(text);
       const importedProfile = coerceImportedProfile(imported.profile);
       const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
 
@@ -2617,21 +2673,21 @@ export default function App() {
 
     try {
       const settingsWithDraftKeys = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
-      const targetText = await callLlm(
+      const targetJson = await callLlmForJson(
         settingsWithDraftKeys,
         buildJobTargetPrompt(generationInstructions),
         null
       );
-      const extractedTarget = validateExtractedJobTarget(extractJson(targetText));
+      const extractedTarget = validateExtractedJobTarget(targetJson);
       const resumeTitle = titleGeneratedResume(extractedTarget.company, extractedTarget.position);
 
       setGenerateStatus("Selecting aligned work history...");
-      const selectionText = await callLlm(
+      const selectionJson = await callLlmForJson(
         settingsWithDraftKeys,
         selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions }),
         null
       );
-      const selectedEvidence = validateSelectedResumeEvidence(extractJson(selectionText));
+      const selectedEvidence = validateSelectedResumeEvidence(selectionJson);
 
       setGenerateStatus("Generating resume from selected evidence...");
       const text = await callLlm(
