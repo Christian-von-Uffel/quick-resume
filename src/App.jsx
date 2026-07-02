@@ -55,11 +55,14 @@ import {
   validateExtractedJobTarget,
   selectBestFittingExperience,
   validateSelectedResumeEvidence,
+  ensureRequiredRolesSelected,
   generateResume,
   extractJobDescription,
   extractCleanedJobDescription,
   collapseBlankLines,
 } from "./lib/generateResume";
+import { summarizeCoverage } from "./lib/workHistoryTimeline";
+import { WorkHistoryTimeline } from "./components/WorkHistoryTimeline";
 import { importResume, coerceImportedProfile } from "./lib/importResume";
 import {
   findMissingExperience,
@@ -104,6 +107,7 @@ export default function App() {
   const [apiKeySaveToast, setApiKeySaveToast] = useState("");
   const [workHistorySaveToast, setWorkHistorySaveToast] = useState("");
   const [workHistorySearch, setWorkHistorySearch] = useState("");
+  const [highlightedWorkId, setHighlightedWorkId] = useState(null);
   const [profileDataToast, setProfileDataToast] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [generateStatus, setGenerateStatus] = useState("");
@@ -567,6 +571,32 @@ export default function App() {
   const handleAddWorkHistory = () => {
     setWorkHistory((current) => [...current, createWorkHistoryItem()]);
   };
+
+  // Jump from the timeline popup to a specific position's edit card. Clears any
+  // active search so the target is visible, then scrolls to and highlights it.
+  const handleFocusWorkHistoryRole = useCallback((workId) => {
+    setActiveMainTab("workHistory");
+    setWorkHistorySearch("");
+    setHighlightedWorkId(workId);
+  }, []);
+
+  // Add a position from a timeline gap, pre-filled with the gap's dates so the
+  // new role lands right where the hole is, then jump to it.
+  const handleAddPositionForGap = useCallback((prefill) => {
+    const item = createWorkHistoryItem(prefill ?? {});
+    setWorkHistory((current) => sortWorkHistory([...current, item]));
+    setActiveMainTab("workHistory");
+    setWorkHistorySearch("");
+    setHighlightedWorkId(item.id);
+  }, []);
+
+  useEffect(() => {
+    if (!highlightedWorkId) return;
+    const el = document.getElementById(`work-card-${highlightedWorkId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timeout = setTimeout(() => setHighlightedWorkId(null), 1800);
+    return () => clearTimeout(timeout);
+  }, [highlightedWorkId]);
 
   const handleUpdateWorkHistory = (workId, field, value) => {
     let nextValue = value;
@@ -1053,13 +1083,21 @@ export default function App() {
       const extractedTarget = validateExtractedJobTarget(targetJson);
       const resumeTitle = titleGeneratedResume(extractedTarget.company, extractedTarget.position);
 
+      // Deterministic, non-LLM rule for which roles must appear so the resume
+      // shows continuous, current employment and covers recent gaps.
+      const coverage = summarizeCoverage(workHistory);
+
       setGenerateStatus("Selecting aligned work history...");
       const selectionJson = await callLlmForJson(
         settingsWithDraftKeys,
-        selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions }),
+        selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions, coverage }),
         null
       );
-      const selectedEvidence = validateSelectedResumeEvidence(selectionJson);
+      const selectedEvidence = ensureRequiredRolesSelected(
+        validateSelectedResumeEvidence(selectionJson),
+        coverage,
+        workHistory
+      );
 
       setGenerateStatus("Generating resume from selected evidence...");
       const text = await callLlm(
@@ -1069,6 +1107,7 @@ export default function App() {
           selectedEvidence,
           instructions: generationInstructions,
           jobTitle: extractedTarget.position,
+          coverage,
         }),
         null
       );
@@ -1305,7 +1344,12 @@ export default function App() {
           </div>
 
           {sortedWorkHistory.length > 0 && (
-            <div className="px-4 py-3 border-b border-neutral-800">
+            <div className="px-4 py-3 border-b border-neutral-800 space-y-3">
+              <WorkHistoryTimeline
+                workHistory={sortedWorkHistory}
+                onSelectRole={handleFocusWorkHistoryRole}
+                onAddPosition={handleAddPositionForGap}
+              />
               <input
                 type="text"
                 value={workHistorySearch}
@@ -1332,7 +1376,15 @@ export default function App() {
               </div>
             ) : (
               visibleWorkHistory.map((item) => (
-                <div key={item.id} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+                <div
+                  key={item.id}
+                  id={`work-card-${item.id}`}
+                  className={`rounded-xl border bg-neutral-950/40 p-4 transition-shadow duration-500 ${
+                    highlightedWorkId === item.id
+                      ? "border-blue-500 ring-2 ring-blue-500/60"
+                      : "border-neutral-800"
+                  }`}
+                >
                   <div className="flex justify-end mb-3">
                     <button
                       type="button"
