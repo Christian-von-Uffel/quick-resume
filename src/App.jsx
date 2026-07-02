@@ -1,1718 +1,78 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { flushSync } from "react-dom";
-import { prepareWithSegments, layout, layoutWithLines } from "@chenglou/pretext";
-
-/* ── Page constants ────────────────────────────────────────── */
-const PAGE_W = 620;
-const PAGE_H = Math.round(PAGE_W * (297 / 210));
-const DEFAULT_PAD = 40;
-const FONT = "InterVariable, sans-serif";
-const LH_MIN = 1.15;
-const LH_MAX = 1.8;
-const LH_DEFAULT = 1.5;
-const FS_MAX_DEFAULT = 14;
-const STORAGE_KEY = "quick-resume:v1";
-const PROFILE_EXPORT_VERSION = 1;
-const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
-const DEFAULT_OPENAI_MODEL = "gpt-5.5";
-const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
-
-const LLM_PROVIDERS = [
-  ["gemini", "Google"],
-  ["openai", "OpenAI"],
-  ["anthropic", "Anthropic"],
-];
-
-const OPENAI_MODEL_OPTIONS = [
-  ["gpt-5.5", "gpt-5.5"],
-  ["gpt-5.4", "gpt-5.4"],
-  ["gpt-5.4-mini", "gpt-5.4-mini"],
-  ["gpt-5.4-nano", "gpt-5.4-nano"],
-];
-
-const FALLBACK_MODEL_OPTIONS = {
-  gemini: [
-    ["gemini-3.5-flash", "gemini-3.5-flash"],
-    ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
-    ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite"],
-  ],
-  openai: OPENAI_MODEL_OPTIONS,
-  anthropic: [
-    ["claude-fable-5", "claude-fable-5"],
-    ["claude-opus-4-8", "claude-opus-4-8"],
-    ["claude-sonnet-4-6", "claude-sonnet-4-6"],
-    ["claude-haiku-4-5", "claude-haiku-4-5"],
-  ],
-};
-
-const CONTACT_FIELDS = [
-  ["location", "Location"],
-  ["email", "Email"],
-  ["phone", "Phone"],
-  ["linkedin", "LinkedIn"],
-  ["github", "GitHub"],
-  ["website", "Website"],
-];
-
-const DEFAULT_VISIBLE_CONTACT_FIELDS = ["location", "email", "linkedin", "github", "website"];
-
-const DEFAULT_PROFILE = {
-  name: "",
-  headline: "",
-  location: "",
-  email: "",
-  phone: "",
-  linkedin: "",
-  github: "",
-  website: "",
-  visibleContactFields: DEFAULT_VISIBLE_CONTACT_FIELDS,
-  education: [],
-};
-
-const DEFAULT_LLM_SETTINGS = {
-  provider: "gemini",
-  model: DEFAULT_GEMINI_MODEL,
-  geminiApiKey: "",
-  openaiApiKey: "",
-  anthropicApiKey: "",
-  firecrawlApiKey: "",
-  rememberApiKey: true,
-};
-
-
-const MONTH_OPTIONS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-
-const MONTH_SELECT_OPTIONS = MONTH_OPTIONS.map((label, index) => [
-  String(index + 1).padStart(2, "0"),
-  label,
-]);
-
-const EMPTY_POSITION_DRAFT = {
-  position: "",
-  company: "",
-  startMonth: "",
-  startYear: "",
-  endMonth: "",
-  endYear: "",
-};
-
-const MONTH_NAME_TO_NUM = MONTH_OPTIONS.reduce((acc, month, index) => {
-  const num = String(index + 1).padStart(2, "0");
-  acc[month.toLowerCase()] = num;
-  acc[month.slice(0, 3).toLowerCase()] = num;
-  return acc;
-}, {});
-
-for (let month = 1; month <= 12; month += 1) {
-  MONTH_NAME_TO_NUM[String(month)] = String(month).padStart(2, "0");
-  MONTH_NAME_TO_NUM[String(month).padStart(2, "0")] = String(month).padStart(2, "0");
-}
-
-function normalizeWorkMonth(value) {
-  const normalized = String(value ?? "").trim();
-  if (!normalized) return "";
-
-  const mapped = MONTH_NAME_TO_NUM[normalized.toLowerCase()];
-  if (mapped) return mapped;
-
-  if (/^\d{1,2}$/.test(normalized)) {
-    const monthNum = parseInt(normalized, 10);
-    if (monthNum >= 1 && monthNum <= 12) {
-      return String(monthNum).padStart(2, "0");
-    }
-  }
-
-  return "";
-}
-
-function normalizeWorkYear(value) {
-  const normalized = String(value ?? "").trim();
-  if (!normalized) return "";
-  if (/^present$/i.test(normalized) || /^current$/i.test(normalized)) return "present";
-
-  const yearMatch = normalized.match(/\b(19|20)\d{2}\b/);
-  if (yearMatch) return yearMatch[0];
-
-  if (/^\d{1,4}$/.test(normalized)) return normalized;
-
-  return "";
-}
-
-function parseWorkDateParts(value) {
-  const normalized = value.trim();
-  if (!normalized) return { month: "", year: "" };
-  if (/^present$/i.test(normalized) || /^current$/i.test(normalized)) {
-    return { month: "", year: "present" };
-  }
-
-  let match = normalized.match(/^(\d{4})[-/.](\d{1,2})$/);
-  if (match) {
-    return {
-      month: String(parseInt(match[2], 10)).padStart(2, "0"),
-      year: match[1],
-    };
-  }
-
-  match = normalized.match(/^(\d{1,2})[-/.](\d{4})$/);
-  if (match) {
-    return {
-      month: String(parseInt(match[1], 10)).padStart(2, "0"),
-      year: match[2],
-    };
-  }
-
-  if (/^\d{4}$/.test(normalized)) {
-    return { month: "", year: normalized };
-  }
-
-  const tokens = normalized.split(/[\s,/-]+/).filter(Boolean);
-  const year = tokens.find((token) => /^(19|20)\d{2}$/.test(token)) ?? "";
-  let month = "";
-
-  for (const token of tokens) {
-    const mapped = MONTH_NAME_TO_NUM[token.toLowerCase()];
-    if (mapped) {
-      month = mapped;
-      break;
-    }
-
-    if (/^\d{1,2}$/.test(token)) {
-      const monthNum = parseInt(token, 10);
-      if (monthNum >= 1 && monthNum <= 12) {
-        month = String(monthNum).padStart(2, "0");
-        break;
-      }
-    }
-  }
-
-  return { month, year };
-}
-
-function workHistorySortScore(month, year) {
-  const normalizedYear = normalizeWorkYear(year);
-  const normalizedMonth = normalizeWorkMonth(month);
-  const yearNum = normalizedYear === "present" ? 9999 : parseInt(normalizedYear, 10) || 0;
-  const monthNum = parseInt(normalizedMonth, 10) || 0;
-  return yearNum * 100 + monthNum;
-}
-
-function compareWorkHistoryByDate(a, b) {
-  const endDiff =
-    workHistorySortScore(b.endMonth, b.endYear) - workHistorySortScore(a.endMonth, a.endYear);
-  if (endDiff !== 0) return endDiff;
-  return workHistorySortScore(b.startMonth, b.startYear) - workHistorySortScore(a.startMonth, a.startYear);
-}
-
-function sortWorkHistory(items) {
-  return [...items].sort(compareWorkHistoryByDate);
-}
-
-function makeResumeId() {
-  return globalThis.crypto?.randomUUID?.() ?? `resume-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function makeWorkHistoryId() {
-  return `work-${makeResumeId()}`;
-}
-
-function formatResumeName(value) {
-  const normalized = value.trim().replace(/\s+/g, " ");
-  if (!normalized) return "";
-  return normalized.replace(/\b[a-z]/g, (char) => char.toUpperCase());
-}
-
-function formatResumeDate(date = new Date()) {
-  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
-}
-
-function titleResume(company, jobTitle, date = new Date()) {
-  const formattedCompany = formatResumeName(company);
-  const formattedTitle = formatResumeName(jobTitle);
-  const parts = [formattedCompany, formattedTitle].filter(Boolean);
-  if (!parts.length) return "New Resume";
-  return `${parts.join(" - ")} - ${formatResumeDate(date)}`;
-}
-
-function titleGeneratedResume(company, jobTitle, date = new Date()) {
-  const formattedCompany = formatResumeName(company);
-  const formattedTitle = formatResumeName(jobTitle);
-  const parts = [formattedCompany, formattedTitle, formatResumeDate(date)].filter(Boolean);
-  return parts.join(" - ");
-}
-
-function formatExportDate(value) {
-  const parsed = value ? new Date(value) : new Date();
-  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-// Best-effort recovery of company/title from a legacy resume name shaped like
-// "Company - Position - YYYY-M-D" for resumes saved before those fields existed.
-function parseResumeNameParts(name) {
-  const segments = String(name || "")
-    .split(" - ")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-  if (segments.length && /^\d{4}-\d{1,2}-\d{1,2}$/.test(segments[segments.length - 1])) {
-    segments.pop();
-  }
-  return { company: segments[0] ?? "", jobTitle: segments[1] ?? "" };
-}
-
-function buildResumeExportName({ fullName, markdown, company, jobTitle, updatedAt }) {
-  const headingName = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
-  const name = (fullName || "").trim() || headingName || "Resume";
-  const parts = [
-    name,
-    formatResumeName(company ?? ""),
-    formatResumeName(jobTitle ?? ""),
-    formatExportDate(updatedAt),
-  ].filter(Boolean);
-  return parts.join(" - ");
-}
-
-function getResumeName(md, fallback = "Untitled Resume") {
-  const title = md.match(/^#\s+(.+)$/m)?.[1]?.trim();
-  const subtitle = md
-    .split("\n")
-    .find((line, index, lines) => index > lines.findIndex((item) => item.startsWith("# ")) && line.trim() && line.trim() !== "---")
-    ?.trim();
-
-  if (title && subtitle) return `${title} - ${subtitle}`;
-  return title || fallback;
-}
-
-function createResumeMarkdown(name) {
-  return name ? `# ${name}` : "";
-}
-
-function makeEducationId() {
-  return `edu-${makeResumeId()}`;
-}
-
-function createEducationItem(values = {}) {
-  const endParts = parseWorkDateParts(values.endDate ?? "");
-
-  return {
-    id: values.id ?? makeEducationId(),
-    school: values.school ?? "",
-    degree: values.degree ?? "",
-    year: normalizeWorkYear(values.year ?? values.endYear ?? endParts.year),
-    description: values.description ?? "",
-  };
-}
-
-function createWorkHistoryItem(values = {}) {
-  const startParts = parseWorkDateParts(values.startDate ?? "");
-  const endParts = parseWorkDateParts(values.endDate ?? "");
-
-  return {
-    id: values.id ?? makeWorkHistoryId(),
-    position: values.position ?? "",
-    company: values.company ?? "",
-    startMonth: normalizeWorkMonth(values.startMonth ?? startParts.month),
-    startYear: normalizeWorkYear(values.startYear ?? startParts.year),
-    endMonth: normalizeWorkMonth(values.endMonth ?? endParts.month),
-    endYear: normalizeWorkYear(values.endYear ?? endParts.year),
-    description: values.description ?? "",
-  };
-}
-
-function parseWorkHistory(md) {
-  const lines = md.split("\n");
-  const entries = [];
-  let inExperience = false;
-
-  lines.forEach((line, index) => {
-    if (line.startsWith("## ")) {
-      inExperience = line.slice(3).trim().toLowerCase() === "experience";
-      return;
-    }
-
-    if (!inExperience || !line.startsWith("### ")) return;
-
-    const [position = "", company = ""] = line.slice(4).split(/\s+[—-]\s+/, 2);
-    const dateLine = lines[index + 1]?.trim() ?? "";
-    const [startDate = "", endDate = ""] = dateLine.split(/\s+[—-]\s+/, 2);
-    const descriptionLines = [];
-
-    for (let nextIndex = index + 2; nextIndex < lines.length; nextIndex++) {
-      const nextLine = lines[nextIndex];
-      if (nextLine.startsWith("## ") || nextLine.startsWith("### ")) break;
-      if (nextLine.startsWith("- ")) descriptionLines.push(nextLine.slice(2));
-    }
-
-    entries.push(createWorkHistoryItem({
-      position: position.trim(),
-      company: company.trim(),
-      startDate: startDate.trim(),
-      endDate: endDate.trim(),
-      description: descriptionLines.join("\n"),
-    }));
-  });
-
-  return entries;
-}
-
-function createResume(company = "", jobTitle = "") {
-  const name = titleResume(company, jobTitle);
-  const roleForMarkdown = formatResumeName(jobTitle);
-  return {
-    id: makeResumeId(),
-    name,
-    company: company.trim(),
-    jobTitle: jobTitle.trim(),
-    content: createResumeMarkdown(roleForMarkdown),
-    workHistory: [],
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-const DEFAULT_RESUME = createResume();
-const INITIAL_RESUMES = [DEFAULT_RESUME];
-const INITIAL_WORK_HISTORY = [];
-
-function normalizeStoredList(value, fallback) {
-  return Array.isArray(value) ? value : fallback;
-}
-
-function loadStoredAppState() {
-  if (typeof window === "undefined") return {};
-
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveStoredAppState(state) {
-  if (typeof window === "undefined") return;
-
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Local storage is a convenience layer; the editor should keep working without it.
-  }
-}
-
-function buildProfileExportPayload({ profile, workHistory, resumes, selectedResumeId, llmSettings }) {
-  return {
-    version: PROFILE_EXPORT_VERSION,
-    exportedAt: new Date().toISOString(),
-    profile,
-    workHistory: workHistory.map(normalizeWorkHistoryItem),
-    resumes: resumes.map(({ id, name, company, jobTitle, content, updatedAt }) => ({
-      id,
-      name,
-      company,
-      jobTitle,
-      content,
-      updatedAt,
-    })),
-    selectedResumeId,
-    llmSettings: {
-      provider: llmSettings.provider,
-      model: llmSettings.model,
-    },
-  };
-}
-
-function parseProfileExportFile(raw) {
-  let parsed = raw;
-
-  if (typeof raw === "string") {
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("The file is not valid JSON.");
-    }
-  }
-
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("The file is not a valid One Resume export.");
-  }
-
-  const resumes = normalizeResumeList(parsed.resumes);
-  const workHistory = sortWorkHistory(
-    normalizeStoredList(parsed.workHistory, []).map(normalizeWorkHistoryItem)
-  );
-  const profile = normalizeProfile(parsed.profile);
-  const selectedResume =
-    resumes.find((resume) => resume.id === parsed.selectedResumeId) ?? resumes[0];
-  const importedLlm = normalizeLlmSettings(parsed.llmSettings);
-
-  return {
-    profile,
-    workHistory,
-    resumes,
-    selectedResumeId: selectedResume.id,
-    markdown: selectedResume.content,
-    llmSettings: importedLlm,
-  };
-}
-
-function downloadJsonFile(payload, filename) {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-function normalizeProfile(value) {
-  return {
-    ...DEFAULT_PROFILE,
-    ...(value && typeof value === "object" ? value : {}),
-    visibleContactFields: normalizeStoredList(value?.visibleContactFields, DEFAULT_VISIBLE_CONTACT_FIELDS),
-    education: sortEducation(
-      normalizeStoredList(value?.education, []).map(normalizeEducationItem)
-    ),
-  };
-}
-
-function normalizeModelId(id) {
-  return String(id ?? "").trim().replace(/^models\//, "");
-}
-
-function createModelOption(id) {
-  const modelId = normalizeModelId(id);
-  return [modelId, modelId];
-}
-
-function getDefaultModelForProvider(provider, modelOptionsByProvider = FALLBACK_MODEL_OPTIONS) {
-  const options = modelOptionsByProvider[provider] ?? FALLBACK_MODEL_OPTIONS[provider] ?? [];
-  if (options[0]?.[0]) return options[0][0];
-  if (provider === "openai") return DEFAULT_OPENAI_MODEL;
-  if (provider === "anthropic") return DEFAULT_ANTHROPIC_MODEL;
-  return DEFAULT_GEMINI_MODEL;
-}
-
-function stripModelSnapshotSuffix(id) {
-  return id.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
-}
-
-function dedupeModelOptions(options) {
-  const seen = new Set();
-
-  return options.filter(([id]) => {
-    const base = stripModelSnapshotSuffix(id);
-    if (seen.has(base)) return false;
-    seen.add(base);
-    return true;
-  });
-}
-
-function isGeminiTextModel(model) {
-  const methods = model.supportedGenerationMethods ?? [];
-  if (!methods.includes("generateContent")) return false;
-
-  const id = (model.name ?? "").replace(/^models\//, "");
-  if (!/^gemini/i.test(id)) return false;
-  if (/embedding|embed|aqa|imagen|veo|tts|live|robotics|computer-use/i.test(id)) return false;
-  if (methods.includes("embedContent") && !methods.includes("generateContent")) return false;
-  if (typeof model.outputTokenLimit === "number" && model.outputTokenLimit <= 0) return false;
-
-  return true;
-}
-
-function isAnthropicTextModel(model) {
-  return model.type === "model" && /^claude[-_]/i.test(model.id ?? "");
-}
-
-async function fetchAllGeminiModels(apiKey) {
-  const models = [];
-  let pageToken = null;
-
-  do {
-    const params = new URLSearchParams({
-      key: apiKey.trim(),
-      pageSize: "1000",
-    });
-    if (pageToken) params.set("pageToken", pageToken);
-
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?${params}`);
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error?.message ?? "Could not load Gemini models.");
-    }
-
-    models.push(...(data.models ?? []));
-    pageToken = data.nextPageToken ?? null;
-  } while (pageToken);
-
-  return models;
-}
-
-async function fetchAllAnthropicModels(apiKey) {
-  const models = [];
-  let afterId = null;
-
-  while (true) {
-    const params = new URLSearchParams({ limit: "1000" });
-    if (afterId) params.set("after_id", afterId);
-
-    const response = await fetch(`https://api.anthropic.com/v1/models?${params}`, {
-      headers: {
-        "x-api-key": apiKey.trim(),
-        "anthropic-version": "2023-06-01",
-        // Anthropic blocks browser origins by default; this header opts into CORS.
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error?.message ?? "Could not load Anthropic models.");
-    }
-
-    models.push(...(data.data ?? []));
-    if (!data.has_more || !data.last_id) break;
-    afterId = data.last_id;
-  }
-
-  return models;
-}
-
-async function fetchGeminiModelOptions(apiKey) {
-  const models = await fetchAllGeminiModels(apiKey);
-
-  return dedupeModelOptions(
-    models
-      .filter(isGeminiTextModel)
-      .map((model) => createModelOption((model.name ?? "").replace(/^models\//, "")))
-      .sort((a, b) => a[0].localeCompare(b[0]))
-  );
-}
-
-async function fetchOpenAIModelOptions(_apiKey) {
-  return OPENAI_MODEL_OPTIONS;
-}
-
-async function fetchAnthropicModelOptions(apiKey) {
-  const models = await fetchAllAnthropicModels(apiKey);
-
-  return dedupeModelOptions(
-    models
-      .filter(isAnthropicTextModel)
-      .map((model) => createModelOption(model.id))
-  );
-}
-
-async function fetchProviderModelOptions(provider, apiKey) {
-  const key = sanitizeApiKey(apiKey);
-  if (provider === "openai") return fetchOpenAIModelOptions(key);
-  if (provider === "anthropic") return fetchAnthropicModelOptions(key);
-  return fetchGeminiModelOptions(key);
-}
-
-// API keys are sent as HTTP header values, which must be Latin-1. Pasted keys
-// sometimes carry invisible or non-ASCII characters (smart quotes, zero-width
-// spaces, non-breaking spaces) that survive .trim() and make fetch throw
-// "String contains non ISO-8859-1 code point" before the request is sent.
-// Provider keys are always printable ASCII, so strip anything else.
-function sanitizeApiKey(key) {
-  return (key ?? "").replace(/[^\x20-\x7E]/g, "").trim();
-}
-
-function getApiKeyForProvider(settings) {
-  if (settings.provider === "openai") return settings.openaiApiKey ?? "";
-  if (settings.provider === "anthropic") return settings.anthropicApiKey ?? "";
-  return settings.geminiApiKey ?? "";
-}
-
-function getProviderLabel(provider) {
-  return LLM_PROVIDERS.find(([value]) => value === provider)?.[1] ?? "selected provider";
-}
-
-function applyApiKeyDrafts(settings, drafts) {
-  return {
-    ...settings,
-    geminiApiKey: drafts.gemini,
-    openaiApiKey: drafts.openai,
-    anthropicApiKey: drafts.anthropic,
-    firecrawlApiKey: drafts.firecrawl,
-    rememberApiKey: true,
-  };
-}
-
-function normalizeLlmProvider(value) {
-  if (value === "openai" || value === "anthropic") return value;
-  return "gemini";
-}
-
-function normalizeLlmSettings(value) {
-  const raw = value && typeof value === "object" ? value : {};
-  const provider = normalizeLlmProvider(raw.provider);
-  const fallbackModel = getDefaultModelForProvider(provider);
-  const modelOptions = (FALLBACK_MODEL_OPTIONS[provider] ?? []).map(([model]) => model);
-  const model = modelOptions.includes(raw.model) ? raw.model : fallbackModel;
-
-  let geminiApiKey = raw.geminiApiKey ?? "";
-  let openaiApiKey = raw.openaiApiKey ?? "";
-  let anthropicApiKey = raw.anthropicApiKey ?? "";
-  let firecrawlApiKey = raw.firecrawlApiKey ?? "";
-
-  if (raw.apiKey && !geminiApiKey && !openaiApiKey && !anthropicApiKey) {
-    if (provider === "openai") openaiApiKey = raw.apiKey;
-    else if (provider === "anthropic") anthropicApiKey = raw.apiKey;
-    else geminiApiKey = raw.apiKey;
-  }
-
-  return {
-    ...DEFAULT_LLM_SETTINGS,
-    ...raw,
-    provider,
-    model,
-    geminiApiKey,
-    openaiApiKey,
-    anthropicApiKey,
-    firecrawlApiKey,
-    rememberApiKey: true,
-  };
-}
-
-function normalizeWorkHistoryItem(value = {}) {
-  return createWorkHistoryItem({
-    ...value,
-    id: value.id,
-    position: value.position ?? "",
-    company: value.company ?? "",
-    startMonth: value.startMonth ?? "",
-    startYear: value.startYear ?? "",
-    endMonth: value.endMonth ?? "",
-    endYear: value.endYear ?? "",
-    description: Array.isArray(value.description)
-      ? value.description.join("\n")
-      : value.description ?? "",
-  });
-}
-
-function normalizeEducationItem(value = {}) {
-  return createEducationItem({
-    ...value,
-    id: value.id,
-    school: value.school ?? "",
-    degree: value.degree ?? "",
-    year: value.year ?? value.endYear ?? "",
-    description: Array.isArray(value.description)
-      ? value.description.join("\n")
-      : value.description ?? "",
-  });
-}
-
-function compareEducationByDate(a, b) {
-  return workHistorySortScore("", b.year) - workHistorySortScore("", a.year);
-}
-
-function sortEducation(items) {
-  return [...items].sort(compareEducationByDate);
-}
-
-function normalizeResume(value, index = 0) {
-  const fallback = DEFAULT_RESUME;
-  const stored = value && typeof value === "object" ? value : {};
-  const content = typeof value === "string"
-    ? value
-    : typeof stored.content === "string"
-      ? stored.content
-      : typeof stored.markdown === "string"
-        ? stored.markdown
-        : fallback.content;
-  const name = typeof stored.name === "string" && stored.name.trim()
-    ? stored.name.trim()
-    : getResumeName(content, fallback.name);
-  const workHistorySource = Array.isArray(stored.workHistory)
-    ? stored.workHistory
-    : parseWorkHistory(content);
-  const legacyParts = parseResumeNameParts(name);
-  const company = typeof stored.company === "string" && stored.company.trim()
-    ? stored.company.trim()
-    : legacyParts.company;
-  const jobTitle = typeof stored.jobTitle === "string" && stored.jobTitle.trim()
-    ? stored.jobTitle.trim()
-    : legacyParts.jobTitle;
-
-  return {
-    id: typeof stored.id === "string" && stored.id.trim() ? stored.id : fallback.id,
-    name,
-    company,
-    jobTitle,
-    content,
-    workHistory: workHistorySource.map(normalizeWorkHistoryItem),
-    updatedAt: typeof stored.updatedAt === "string" ? stored.updatedAt : "",
-  };
-}
-
-function normalizeResumeList(value) {
-  const source = Array.isArray(value) && value.length > 0 ? value : INITIAL_RESUMES;
-  const normalized = source.map(normalizeResume);
-
-  return normalized.length > 0 ? normalized : INITIAL_RESUMES;
-}
-
-function workHistoryKey(item) {
-  return [
-    item.company,
-    item.position,
-    item.startMonth,
-    item.startYear,
-    item.endMonth,
-    item.endYear,
-  ]
-    .map((part) => String(part ?? "").trim().toLowerCase())
-    .join("|");
-}
-
-function mergeWorkHistory(current, incoming) {
-  const merged = [...current];
-
-  incoming.forEach((item) => {
-    const normalized = normalizeWorkHistoryItem(item);
-    const key = workHistoryKey(normalized);
-    const existingIndex = merged.findIndex((existing) => workHistoryKey(existing) === key);
-
-    if (existingIndex >= 0) {
-      merged[existingIndex] = {
-        ...merged[existingIndex],
-        ...normalized,
-        id: merged[existingIndex].id,
-      };
-    } else if (normalized.position || normalized.company || normalized.description) {
-      merged.push(normalized);
-    }
-  });
-
-  return merged.length > 0 ? sortWorkHistory(merged) : merged;
-}
-
-function educationKey(item) {
-  return [
-    item.school,
-    item.degree,
-    item.year,
-  ]
-    .map((part) => String(part ?? "").trim().toLowerCase())
-    .join("|");
-}
-
-function mergeEducation(current, incoming) {
-  const merged = [...(current ?? [])];
-
-  (incoming ?? []).forEach((item) => {
-    const normalized = normalizeEducationItem(item);
-    const key = educationKey(normalized);
-    const existingIndex = merged.findIndex((existing) => educationKey(existing) === key);
-
-    if (existingIndex >= 0) {
-      merged[existingIndex] = {
-        ...merged[existingIndex],
-        ...normalized,
-        id: merged[existingIndex].id,
-      };
-    } else if (normalized.school || normalized.degree || normalized.description) {
-      merged.push(normalized);
-    }
-  });
-
-  return merged.length > 0 ? sortEducation(merged) : merged;
-}
-
-function getVisibleContactLine(profile) {
-  return (profile.visibleContactFields ?? DEFAULT_VISIBLE_CONTACT_FIELDS)
-    .map((field) => profile[field])
-    .filter(Boolean)
-    .join(" · ");
-}
-
-function coerceImportedProfile(profile) {
-  if (!profile || typeof profile !== "object") return {};
-
-  const acc = CONTACT_FIELDS.concat([["name"], ["headline"]]).reduce((res, [field]) => {
-    if (typeof profile[field] === "string") res[field] = profile[field].trim();
-    return res;
-  }, {});
-
-  if (Array.isArray(profile.education)) {
-    acc.education = sortEducation(profile.education.map(normalizeEducationItem));
-  } else {
-    acc.education = [];
-  }
-
-  return acc;
-}
-
-function validateExtractedJobTarget(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The model did not return valid title JSON.");
-  }
-
-  const { company, position } = value;
-  if (typeof company !== "string" || typeof position !== "string") {
-    throw new Error("The title JSON must include company and position strings.");
-  }
-
-  return {
-    company: company.trim(),
-    position: position.trim(),
-  };
-}
-
-function validateSelectedResumeEvidence(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The model did not return valid fit selection JSON.");
-  }
-
-  return {
-    fitSummary: typeof value.fitSummary === "string" ? value.fitSummary.trim() : "",
-    selectedWorkHistory: Array.isArray(value.selectedWorkHistory) ? value.selectedWorkHistory : [],
-    selectedSkills: Array.isArray(value.selectedSkills) ? value.selectedSkills : [],
-    excludedItems: Array.isArray(value.excludedItems) ? value.excludedItems : [],
-  };
-}
-
-function normalizeMissingExperienceDetail(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-
-  const skill = typeof value.skill === "string" ? value.skill.trim() : "";
-  if (!skill) return null;
-
-  const plainspokenDetail =
-    typeof value.plainspokenDetail === "string" && value.plainspokenDetail.trim()
-      ? value.plainspokenDetail.trim()
-      : `Experience with ${skill}.`;
-  const question =
-    typeof value.question === "string" && value.question.trim()
-      ? formatExperienceQuestion(value.question)
-      : `Do you have experience with ${skill}?`;
-
-  if (!isSpecificExperienceQuestion(question)) return null;
-
-  const answerPlaceholder =
-    typeof value.answerPlaceholder === "string" && value.answerPlaceholder.trim()
-      ? value.answerPlaceholder.trim()
-      : `Yes, I ${skill.charAt(0).toLowerCase()}${skill.slice(1)}...`;
-
-  return {
-    skill,
-    whyItMatters: typeof value.whyItMatters === "string" ? value.whyItMatters.trim() : "",
-    question,
-    plainspokenDetail,
-    answerPlaceholder,
-  };
-}
-
-function isSpecificExperienceQuestion(value) {
-  const question = String(value ?? "").trim().toLowerCase();
-  if (!question) return false;
-
-  const broadPatterns = [
-    /\band\b/,
-    /[/&]/,
-    /\ball\b/,
-    /\bany\b/,
-    /\bvarious\b/,
-    /\bmultiple\b/,
-    /\boverall\b/,
-    /\bgeneral\b/,
-    /\bfunctions?\b/,
-    /\bduties\b/,
-    /\btasks\b/,
-    /\bresponsibilities\b/,
-    /\bfront[-\s]?end\b/,
-    /\bincluding\b/,
-    /\bsuch as\b/,
-    /\blike\b/,
-    /\betc\b/,
-  ];
-
-  return !broadPatterns.some((pattern) => pattern.test(question));
-}
-
-function formatExperienceQuestion(value) {
-  const question = String(value ?? "").trim();
-  if (!question) return "";
-  if (/^do you have experience\b/i.test(question)) return question;
-
-  const normalized = question
-    .replace(/^have you\s+/i, "")
-    .replace(/^are you experienced (?:with|in)\s+/i, "")
-    .replace(/^can you\s+/i, "")
-    .replace(/^do you know how to\s+/i, "")
-    .replace(/[?.!]*$/, "")
-    .trim();
-
-  return `Do you have experience ${normalized}?`;
-}
-
-function validateMissingExperienceDetails(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The model did not return valid missing experience JSON.");
-  }
-
-  return normalizeStoredList(value.missingExperienceDetails, [])
-    .map(normalizeMissingExperienceDetail)
-    .filter(Boolean);
-}
-
-function extractJson(text) {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  const candidate = fenced ?? text;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("The model did not return JSON.");
-  }
-
-  return JSON.parse(candidate.slice(start, end + 1));
-}
-
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? "");
-      resolve(result.includes(",") ? result.split(",")[1] : result);
-    };
-    reader.onerror = () => reject(new Error("Could not read the uploaded file."));
-    reader.readAsDataURL(file);
-  });
-}
-
-function readFileAsText(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("Could not read the uploaded file."));
-    reader.readAsText(file);
-  });
-}
-
-// Optional sampling params that some models reject: OpenAI's reasoning models
-// don't accept `temperature`, and Anthropic removed `temperature`/`top_p`/`top_k`
-// on its newer models (Opus 4.8, Fable 5, ...) — sending them there returns a 400.
-const DROPPABLE_MODEL_PARAMS = ["temperature", "top_p", "top_k"];
-
-// Find a parameter the API rejected so we can drop it and retry. Handles both
-// OpenAI's quoted phrasing ("Unsupported parameter: 'temperature' ...") and
-// Anthropic's less structured 400, which names the field without a fixed format.
-function getUnsupportedParam(message, body) {
-  const quoted = /unsupported parameter|not supported with this model/i.test(message)
-    ? message.match(/'([^']+)'/)?.[1] ?? null
-    : null;
-  if (quoted && Object.prototype.hasOwnProperty.call(body, quoted)) return quoted;
-
-  return (
-    DROPPABLE_MODEL_PARAMS.find(
-      (param) =>
-        Object.prototype.hasOwnProperty.call(body, param) &&
-        new RegExp(`\\b${param}\\b`, "i").test(message)
-    ) ?? null
-  );
-}
-
-// Rather than maintain a per-model allowlist, POST the request and, if the API
-// rejects a parameter as unsupported, drop that parameter and retry. This keeps
-// a single code path working across providers and future models.
-async function postModelJson(url, headers, body, fallbackMessage) {
-  let attempt = { ...body };
-
-  // Guard against infinite loops; there are only a handful of optional params.
-  for (let i = 0; i < 4; i += 1) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(attempt),
-    });
-
-    const data = await response.json();
-    if (response.ok) return data;
-
-    const message = data.error?.message ?? "";
-    const unsupportedParam = getUnsupportedParam(message, attempt);
-
-    if (unsupportedParam) {
-      const { [unsupportedParam]: _removed, ...rest } = attempt;
-      attempt = rest;
-      continue;
-    }
-
-    throw new Error(message || fallbackMessage);
-  }
-
-  throw new Error(fallbackMessage);
-}
-
-async function callGemini({ apiKey, model, prompt, file }) {
-  const parts = [{ text: prompt }];
-  if (file) {
-    parts.push({
-      inlineData: {
-        mimeType: file.mimeType,
-        data: file.base64,
-      },
-    });
-  }
-
-  const data = await postModelJson(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {},
-    {
-      contents: [{ role: "user", parts }],
-      generationConfig: { temperature: 0.2 },
-    },
-    "Gemini request failed."
-  );
-
-  return data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n").trim() ?? "";
-}
-
-async function callOpenAI({ apiKey, model, prompt, file }) {
-  const content = [{ type: "input_text", text: prompt }];
-
-  if (file) {
-    const dataUrl = `data:${file.mimeType};base64,${file.base64}`;
-    content.push(
-      file.mimeType === "application/pdf"
-        ? { type: "input_file", filename: file.name, file_data: dataUrl }
-        : { type: "input_image", image_url: dataUrl }
-    );
-  }
-
-  const data = await postModelJson(
-    "https://api.openai.com/v1/responses",
-    { Authorization: `Bearer ${apiKey}` },
-    {
-      model,
-      input: [{ role: "user", content }],
-      temperature: 0.2,
-    },
-    "OpenAI request failed."
-  );
-
-  if (data.output_text) return data.output_text.trim();
-
-  return data.output
-    ?.flatMap((item) => item.content ?? [])
-    ?.map((item) => item.text ?? "")
-    ?.join("\n")
-    ?.trim() ?? "";
-}
-
-async function callAnthropic({ apiKey, model, prompt, file }) {
-  const content = [{ type: "text", text: prompt }];
-
-  if (file) {
-    content.push({
-      type: file.mimeType === "application/pdf" ? "document" : "image",
-      source: {
-        type: "base64",
-        media_type: file.mimeType,
-        data: file.base64,
-      },
-    });
-  }
-
-  const data = await postModelJson(
-    "https://api.anthropic.com/v1/messages",
-    {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      // Anthropic blocks browser origins by default; this header opts into CORS.
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    {
-      model,
-      // Well under every offered model's output cap (haiku/sonnet 64K, opus/fable
-      // 128K) while staying small enough to avoid non-streaming HTTP timeouts.
-      max_tokens: 16000,
-      // Rejected with a 400 on newer models (Opus 4.8, Fable 5); postModelJson
-      // drops it and retries when that happens, so it's kept for the models
-      // (Sonnet 4.6, Haiku 4.5) that still accept it.
-      temperature: 0.2,
-      messages: [{ role: "user", content }],
-    },
-    "Anthropic request failed."
-  );
-
-  return data.content?.map((block) => block.text ?? "").join("\n").trim() ?? "";
-}
-
-async function callLlm(settings, prompt, file) {
-  const apiKey = sanitizeApiKey(getApiKeyForProvider(settings));
-  if (!apiKey) {
-    throw new Error(`Add a ${getProviderLabel(settings.provider)} API key before calling the model.`);
-  }
-
-  const request = {
-    apiKey,
-    model: settings.model.trim() || getDefaultModelForProvider(settings.provider),
-    prompt,
-    file,
-  };
-
-  if (settings.provider === "openai") return callOpenAI(request);
-  if (settings.provider === "anthropic") return callAnthropic(request);
-  return callGemini(request);
-}
-
-// Call the model and parse its response as JSON. Models occasionally wrap the
-// object in prose or emit a stray token that breaks a strict parse; when that
-// happens, hand the model its own output back once and ask for clean JSON before
-// giving up. The file (if any) isn't resent on retry — only the text needs fixing.
-async function callLlmForJson(settings, prompt, file) {
-  const text = await callLlm(settings, prompt, file);
-  try {
-    return extractJson(text);
-  } catch {
-    const repairPrompt = `The following response was supposed to be a single valid JSON object but could not be parsed. Return only the corrected JSON object, with no markdown fences, comments, or surrounding text.
-
-<invalid_response>
-${text}
-</invalid_response>`;
-    const repaired = await callLlm(settings, repairPrompt, null);
-    return extractJson(repaired);
-  }
-}
-
-function importResume() {
-  return `<task>
-Extract resume data from the uploaded file.
-</task>
-
-<instructions>
-Return only valid JSON. Do not wrap it in markdown.
-Use empty strings for unknown profile fields.
-Use one workHistory item per role. Put accomplishment bullets in description separated by newline characters.
-Normalize all dates into numeric fields:
-- startMonth/endMonth: two-digit month strings from "01" to "12", or "" when only a year is known
-- startYear/endYear: four-digit year strings like "2020", or "" when unknown
-- endYear: use "present" for current roles
-Accept any visible resume date format (January, Jan, 01, 03/2020, 2020-01, etc.) and convert it into this schema.
-</instructions>
-
-<schema>
-{
-  "profile": {
-    "name": "",
-    "headline": "",
-    "location": "",
-    "email": "",
-    "phone": "",
-    "linkedin": "",
-    "github": "",
-    "website": ""
-  },
-  "workHistory": [
-    {
-      "position": "",
-      "company": "",
-      "startMonth": "03",
-      "startYear": "2020",
-      "endMonth": "",
-      "endYear": "present",
-      "description": ""
-    }
-  ]
-}
-</schema>`;
-}
-
-function selectBestFittingExperience({ profile, workHistory, instructions }) {
-  return `<task>
-Select the resume evidence that best shows the candidate is a straightforward fit for the target role.
-</task>
-
-<profile>
-${JSON.stringify(profile, null, 2)}
-</profile>
-
-<complete_work_history>
-${JSON.stringify(workHistory, null, 2)}
-</complete_work_history>
-
-<job_description>
-${instructions || "No job description provided. Select the most broadly relevant, concrete, and recent experience."}
-</job_description>
-
-<selection_policy>
-Prefer direct evidence of fit over general impressiveness.
-Select roles, bullets, skills, tools, and outcomes that clearly match the target job's responsibilities and requirements.
-Exclude experience that is impressive but does not help a hiring manager quickly see role fit.
-Do not invent facts, employers, dates, tools, metrics, schools, or responsibilities.
-Do not copy phrases from the job description unless they already appear in the work history.
-Keep the selection plain, credible, and specific.
-</selection_policy>
-
-<instructions>
-Return only valid JSON. Do not wrap it in markdown.
-Copy selected role metadata exactly from the provided work history.
-Rewrite selected bullets only when needed for clarity, while preserving the facts from the source material.
-Use excludedItems to explain what you intentionally left out and why.
-</instructions>
-
-<schema>
-{
-  "fitSummary": "One plain-language sentence explaining the candidate's fit.",
-  "selectedWorkHistory": [
-    {
-      "position": "",
-      "company": "",
-      "startMonth": "",
-      "startYear": "",
-      "endMonth": "",
-      "endYear": "",
-      "fitReason": "",
-      "selectedBullets": [
-        "Specific source-grounded bullet that supports the target role."
-      ]
-    }
-  ],
-  "selectedSkills": [
-    "Relevant skill or tool present in the profile or work history."
-  ],
-  "excludedItems": [
-    {
-      "position": "",
-      "company": "",
-      "reason": "Why this was less aligned with the target role."
-    }
-  ]
-}
-</schema>`;
-}
-
-function generateResume({ profile, selectedEvidence, instructions, jobTitle }) {
-  return `<task>
-Generate polished resume markdown for the current resume builder from curated fit evidence.
-</task>
-
-<format>
-# ${profile.name || "Your Name"}
-[Professional title — see title instructions]
-${getVisibleContactLine(profile)}
-
----
-
-[Professional summary — see summary instructions]
-
-## EXPERIENCE
-
-### Role — Company
-Start — End
-- Achievement bullet
-
-## EDUCATION
-
-### Degree or Certification — School
-Year · Details
-
-## SKILLS
-
-Skill one · Skill two · Skill three
-</format>
-
-<profile>
-${JSON.stringify(profile, null, 2)}
-</profile>
-
-<selected_resume_evidence>
-${JSON.stringify(selectedEvidence, null, 2)}
-</selected_resume_evidence>
-
-<job_description>
-${instructions || "Create a concise, results-focused one-page resume from the selected evidence."}
-</job_description>
-
-<instructions>
-Return only markdown. Use the exact heading style shown in the format.
-Use only the selected resume evidence and profile. Do not include excluded work history.
-Write to show straightforward fit for the target role, not generic impressiveness.
-Prefer measurable, plain-language bullets. Do not invent employers, dates, schools, tools, metrics, or responsibilities not present in the provided data.
-Work history dates are stored as numeric months ("01"-"12") and years ("2020", or "present"). Format them for the resume as readable ranges like "March 2020 — Present".
-
-Professional title (the line directly under the name):
-- Mirror the target role in the job description so a recruiter or ATS instantly sees a match. When the candidate's background genuinely supports it, use the exact role title from the job description.
-- Keep it a concise title, not a sentence. An optional short qualifier is fine (e.g. "Senior Product Manager — B2B SaaS & Growth").
-- Ground it in the candidate's real experience; never claim a level or specialty the selected evidence does not support.${profile.headline ? `\n- The candidate's saved headline is "${profile.headline}". Use it as a starting point and adapt it toward the target role.` : ""}
-- If no job description is provided, use ${profile.headline || jobTitle ? `"${profile.headline || jobTitle}"` : "a concise professional title drawn from the strongest, most recent experience"}.
-
-Professional summary (the line under the divider):
-- Write 2-3 sentences positioned as a pitch for this specific role, not a generic bio.
-- Lead with the candidate's fit for the target title, then weave in the requirements, skills, and keywords from the job description that the candidate genuinely meets — matching the job's own wording where truthful, so it passes both recruiter scanning and ATS keyword matching.
-- Anchor it with one or two of the strongest, most relevant achievements from the selected evidence, with real metrics where available.
-- Only mirror job-description language the candidate can actually back up with the selected evidence and profile. Do not invent qualifications, years of experience, tools, or outcomes.
-</instructions>`;
-}
-
-function extractJobDescription({ title, metaDescription, rawText }) {
-  return `<task>
-Extract and print out just the core job description from the provided raw page text.
-</task>
-
-${title ? `<page_title>${title}</page_title>\n` : ""}${metaDescription ? `<meta_description>${metaDescription}</meta_description>\n` : ""}
-<raw_content>
-${rawText}
-</raw_content>
-
-<instructions>
-Please extract the core job description, including:
-- Role overview
-- Responsibilities and tasks
-- Requirements, qualifications, and skills
-- Benefits and company details (if relevant)
-
-Remove any unrelated page elements like navigation bars, sidebars, header/footer links, social sharing widgets, cookie notices, or other boilerplate content.
-
-Your response must be a valid JSON object wrapped in <json_output> and </json_output> XML tags.
-The JSON object must contain exactly one key: "jobDescription".
-
-Format the response exactly like this:
-<json_output>
-{
-  "jobDescription": "Extracted and clean job description markdown here..."
-}
-</json_output>
-
-Remember to output ONLY the XML-wrapped JSON. No explanations, no introductory text, no conversational text.
-</instructions>`;
-}
-
-function extractCleanedJobDescription(text) {
-  const match = text.match(/<json_output>([\s\S]*?)<\/json_output>/i);
-  const jsonString = match ? match[1].trim() : text;
-
-  try {
-    let cleanedJsonString = jsonString;
-    if (cleanedJsonString.startsWith("```")) {
-      cleanedJsonString = cleanedJsonString.replace(/^```(?:json)?\s*\n/, "").replace(/\n```$/, "");
-    }
-    const data = JSON.parse(cleanedJsonString);
-    if (data && typeof data === "object" && typeof data.jobDescription === "string") {
-      return data.jobDescription.trim();
-    }
-  } catch (error) {
-    console.warn("Failed to parse extracted JSON, falling back to regex block or raw text", error);
-  }
-
-  // Fallback if JSON parsing failed: if XML tags existed, return their content directly, or return the whole text stripped of tags
-  const textWithoutTags = text.replace(/<\/?[a-zA-Z0-9_]+>/g, "").trim();
-  return textWithoutTags;
-}
-
-function collapseBlankLines(text) {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .replace(/(?:[ \t]*\n){2,}[ \t]*/g, "\n");
-}
-
-function buildJobTargetPrompt(jobDescription) {
-  return `<task>
-Extract the company and position from this job description for a saved resume title.
-</task>
-
-<job_description>
-${jobDescription}
-</job_description>
-
-<instructions>
-Return only valid JSON. Do not wrap it in markdown.
-Use empty strings when the company or position cannot be confidently determined from the job description.
-Do not infer missing values from general context.
-</instructions>
-
-<schema>
-{
-  "company": "",
-  "position": ""
-}
-</schema>`;
-}
-
-function findMissingExperience({ workHistory, jobDescription }) {
-  return `<task>
-1. Analyze the job description below to compile a list of necessary skills, experiences, and responsibilities.
-2. Cross-reference this list against the candidate's work history to identify gaps (things requested in the job description but not clearly demonstrated or mentioned in the work history).
-3. Generate simple, direct, conversational questions to ask the candidate about those gaps so they can fill in their work history.
-</task>
-
-<work_history>
-${JSON.stringify(workHistory, null, 2)}
-</work_history>
-
-<job_description>
-${jobDescription}
-</job_description>
-
-<instructions>
-- Identify concrete skills, tools, technologies, methodologies, or hands-on responsibilities in the job description that are missing from the candidate's work history.
-- For each gap, generate a simple, direct, conversational question.
-- Every question MUST start with the exact phrase "Do you have experience" (e.g. "Do you have experience conducting customer discovery interviews?").
-- Write questions in natural, active, plainspoken language—exactly how a recruiter or hiring manager would ask a candidate during an interview. Avoid robotic, academic, corporate, or policy-heavy jargon.
-- Each question must be extremely simple and focus on exactly ONE discrete topic or skill that can be answered with a clear "yes" or "no". Never ask multi-part questions.
-- Keep "plainspokenDetail" simple, factual, and reusable as a bullet point in a work history description (e.g., "Conducted customer discovery interviews to identify user needs.").
-- Write "answerPlaceholder" as a short, first-person example answer that starts with "Yes, I" and hints at the kind of specifics we want (what they did and, when natural, what came of it). Keep it realistic and plainspoken, not fancy. For "Do you have experience designing product literature?" a good placeholder is "Yes, I designed product brochures and one-pagers our sales team handed out at trade shows."
-
-CRITICAL VALIDATION RULES - Violating these will cause the question to be rejected:
-1. Do NOT use the word "and" or "or" anywhere in the question (split combined requirements into separate questions).
-2. Do NOT use the symbols "/" or "&" anywhere in the question.
-3. Do NOT use any of the following banned broad or category words anywhere in the question:
-   - "all", "any", "various", "multiple", "overall", "general"
-   - "function", "functions", "duties", "tasks", "responsibilities"
-   - "frontend", "front-end"
-   - "including", "such as", "like", "etc"
-Instead of asking broad questions, ask about a single, specific activity (e.g., instead of "Do you have experience with agile tasks?", ask "Do you have experience working in an agile team?").
-
-Limit to the 10 most useful missing details. Generate at least 5 details if possible.
-Return only valid JSON matching the schema below. Do not wrap it in markdown block code or add comments.
-</instructions>
-
-<schema>
-{
-  "missingExperienceDetails": [
-    {
-      "skill": "Specific skill or detail from the job description (e.g., Customer discovery interviews)",
-      "whyItMatters": "Short reason this appears important in the job description.",
-      "question": "Do you have experience...",
-      "plainspokenDetail": "Reusable work history detail (e.g., Conducted customer discovery interviews to identify user needs.)",
-      "answerPlaceholder": "Yes, I ... (a short first-person example answer that fits the question)"
-    }
-  ]
-}
-</schema>`;
-}
-
-function formatExperienceElaboration({ question, answer }) {
-  return `<task>
-Rewrite the person's spoken answer into ONE clean, factual sentence describing what they did.
-</task>
-
-<question>
-${question}
-</question>
-
-<answer>
-${answer}
-</answer>
-
-<instructions>
-- Keep the person's own wording and level of detail. Do NOT add buzzwords, corporate jargon, or embellishment, and do NOT make it sound fancier than what they actually said.
-- Remove conversational lead-ins and any direct answer to the question ("Yes, I", "Yeah", "Well", "So", "Basically", "I did"). Start with a past-tense action verb.
-- Keep every concrete fact the person gave: names, places, numbers, tools, dates, and outcomes. Invent nothing.
-- When the answer includes a result, follow a simple "did X, which resulted in Y" shape. Otherwise just state plainly what they did.
-- Fix only grammar, spelling, capitalization, and punctuation. Capitalize proper nouns correctly (e.g., "PAX East", "PS4").
-- Return it as a single line with no line breaks and no leading bullet character or dash.
-- If the answer has no usable detail, just return the answer cleaned up as best you can.
-</instructions>
-
-Return ONLY the rewritten sentence as plain text. No quotes, no labels, no explanation, no markdown.`;
-}
-
-function cleanFormattedDetail(text) {
-  if (typeof text !== "string") return "";
-  let cleaned = text.trim();
-
-  const fenced = cleaned.match(/```(?:\w+)?\s*([\s\S]*?)```/);
-  if (fenced) cleaned = fenced[1].trim();
-
-  cleaned = cleaned.replace(/\s*\n+\s*/g, " ").trim();
-  cleaned = cleaned.replace(/^[-•*]\s*/, "");
-  cleaned = cleaned.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "").trim();
-
-  return cleaned;
-}
-
-/* ── Parse markdown into blocks ────────────────────────────── */
-function parseMarkdown(md) {
-  const blocks = [];
-  const lines = md.split("\n");
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    if (line.trim() === "---") {
-      blocks.push({ type: "hr", mb: 16 });
-      i++;
-      continue;
-    }
-
-    if (line.trim() === "") {
-      i++;
-      continue;
-    }
-
-    if (line.startsWith("# ")) {
-      blocks.push({ text: line.slice(2), fontScale: 1.5, bold: true, mb: 4, color: "#111" });
-      i++;
-      continue;
-    }
-
-    if (line.startsWith("## ")) {
-      blocks.push({ text: line.slice(3), fontScale: 0.85, bold: true, mt: 18, mb: 3, color: "#999" });
-      i++;
-      continue;
-    }
-
-    if (line.startsWith("### ")) {
-      const prev = blocks[blocks.length - 1];
-      const afterSection = prev && prev.fontScale === 0.85 && prev.bold;
-      blocks.push({ text: line.slice(4), fontScale: 1, bold: true, mt: afterSection ? 0 : 10, mb: 2, color: "#111" });
-      i++;
-      continue;
-    }
-
-    if (line.startsWith("- ")) {
-      blocks.push({ text: "\u2022 " + line.slice(2), fontScale: 1, bold: false, mb: 3, color: "#555" });
-      i++;
-      continue;
-    }
-
-    const prevBlock = blocks[blocks.length - 1];
-    const isAfterTitle = prevBlock && prevBlock.bold && prevBlock.fontScale === 1 && prevBlock.mb === 2;
-
-    if (isAfterTitle) {
-      blocks.push({ text: line, fontScale: 0.8, bold: false, mb: 6, color: "#999" });
-    } else if (prevBlock && prevBlock.fontScale === 1.5) {
-      blocks.push({ text: line, fontScale: 1, bold: false, mb: 6, color: "#555" });
-    } else if (prevBlock && !prevBlock.bold && prevBlock.color === "#555" && prevBlock.mb === 6 && prevBlock.fontScale === 1) {
-      blocks.push({ text: line, fontScale: 0.8, bold: false, mb: 16, color: "#999" });
-    } else {
-      blocks.push({ text: line, fontScale: 1, bold: false, mb: 6, color: "#333" });
-    }
-    i++;
-  }
-
-  return blocks;
-}
-
-/* ── Build font string (same for prepare + DOM) ──────────── */
-function fontString(baseFontSize, block) {
-  const fs = baseFontSize * block.fontScale;
-  return `${block.bold ? "bold " : ""}${fs}px ${FONT}`;
-}
-
-/* ── Measure blocks (pure math, no DOM) ────────────────────── */
-function measureBlocks(blocks, baseFontSize, contentW, lhMult = LH_DEFAULT, sectionSpacing = 18, itemSpacing = 10, separatorSpacing = 16) {
-  let h = 0;
-  for (let idx = 0; idx < blocks.length; idx++) {
-    const block = blocks[idx];
-    if (block.mt) {
-      const isSection = block.fontScale === 0.85 && block.bold;
-      const isItem = block.mt > 0 && !isSection;
-      h += isSection ? sectionSpacing : isItem ? itemSpacing : block.mt;
-    }
-    if (block.type === "hr") {
-      h += separatorSpacing + 1 + separatorSpacing;
-      continue;
-    }
-    const fs = baseFontSize * block.fontScale;
-    const lh = fs * lhMult;
-    const font = fontString(baseFontSize, block);
-    h += layout(prepareWithSegments(block.text, font), contentW, lh).height;
-    // Skip mb if the next block has mt or is an hr (spacing is handled by them)
-    const next = blocks[idx + 1];
-    if (next && (next.mt || next.type === "hr")) continue;
-    h += block.mb;
-  }
-  return h;
-}
-
-/* ── Layout blocks into positioned lines ─────────────────── */
-function layoutBlocks(blocks, baseFontSize, contentW, pad, lhMult = LH_DEFAULT, sectionSpacing = 18, itemSpacing = 10, separatorSpacing = 16) {
-  const positioned = [];
-  let y = pad;
-
-  for (let idx = 0; idx < blocks.length; idx++) {
-    const block = blocks[idx];
-    if (block.mt) {
-      const isSection = block.fontScale === 0.85 && block.bold;
-      const isItem = block.mt > 0 && !isSection;
-      y += isSection ? sectionSpacing : isItem ? itemSpacing : block.mt;
-    }
-    if (block.type === "hr") {
-      y += separatorSpacing;
-      positioned.push({ type: "hr", y });
-      y += 1 + separatorSpacing;
-      continue;
-    }
-
-    const fs = baseFontSize * block.fontScale;
-    const lh = fs * lhMult;
-    const font = fontString(baseFontSize, block);
-    const prepared = prepareWithSegments(block.text, font);
-    const result = layoutWithLines(prepared, contentW, lh);
-
-    for (const line of result.lines) {
-      positioned.push({
-        type: "text",
-        text: line.text,
-        x: pad,
-        y,
-        font,
-        fontSize: fs,
-        fontWeight: block.bold ? "bold" : "normal",
-        lineHeight: lh,
-        color: block.color,
-      });
-      y += lh;
-    }
-
-    // Skip mb if the next block has mt or is an hr (spacing is handled by them)
-    const next = blocks[idx + 1];
-    if (next && (next.mt || next.type === "hr")) continue;
-    y += block.mb;
-  }
-
-  return positioned;
-}
-
-/* ── Binary search for optimal font size + line height ────── */
-function findOptimalFit(blocks, contentW, maxH, minFs = 6, maxFs = 24, sectionSpacing = 18, itemSpacing = 10, separatorSpacing = 16) {
-  // Pass 1: max font size at tightest line spacing
-  let lo = minFs;
-  let hi = maxFs;
-  while (hi - lo > 0.01) {
-    const mid = (lo + hi) / 2;
-    if (measureBlocks(blocks, mid, contentW, LH_MIN, sectionSpacing, itemSpacing, separatorSpacing) <= maxH) lo = mid;
-    else hi = mid;
-  }
-  const fontSize = Math.floor(lo * 100) / 100;
-
-  // Pass 2: expand line-height to fill remaining space
-  let lhLo = LH_MIN;
-  let lhHi = LH_MAX;
-  while (lhHi - lhLo > 0.001) {
-    const mid = (lhLo + lhHi) / 2;
-    if (measureBlocks(blocks, fontSize, contentW, mid, sectionSpacing, itemSpacing, separatorSpacing) <= maxH) lhLo = mid;
-    else lhHi = mid;
-  }
-  const lineHeightMult = Math.floor(lhLo * 1000) / 1000;
-
-  return { fontSize, lineHeightMult };
-}
+import {
+  PAGE_W,
+  PAGE_H,
+  DEFAULT_PAD,
+  FONT,
+  LH_MIN,
+  LH_MAX,
+  LH_DEFAULT,
+  FS_MAX_DEFAULT,
+  LLM_PROVIDERS,
+  FALLBACK_MODEL_OPTIONS,
+  CONTACT_FIELDS,
+  DEFAULT_VISIBLE_CONTACT_FIELDS,
+  MONTH_SELECT_OPTIONS,
+  EMPTY_POSITION_DRAFT,
+} from "./lib/constants";
+import { readFileAsText, readFileAsBase64, downloadJsonFile } from "./lib/fileUtils";
+import {
+  sortWorkHistory,
+  sortEducation,
+  normalizeWorkMonth,
+  normalizeWorkYear,
+  normalizeWorkHistoryItem,
+  normalizeEducationItem,
+  normalizeProfile,
+  normalizeResumeList,
+  normalizeStoredList,
+  createResume,
+  createWorkHistoryItem,
+  createEducationItem,
+  getUniqueResumeName,
+  titleResume,
+  titleGeneratedResume,
+  mergeWorkHistory,
+  mergeEducation,
+  getVisibleContactLine,
+  buildResumeExportName,
+  INITIAL_WORK_HISTORY,
+} from "./lib/resumeModel";
+import { loadStoredAppState, saveStoredAppState } from "./lib/storage";
+import {
+  getDefaultModelForProvider,
+  fetchProviderModelOptions,
+  sanitizeApiKey,
+  applyApiKeyDrafts,
+  normalizeLlmSettings,
+  callLlm,
+  callLlmForJson,
+} from "./lib/llm";
+import { parseMarkdown, measureBlocks, layoutBlocks, findOptimalFit } from "./lib/markdownLayout";
+import {
+  buildJobTargetPrompt,
+  validateExtractedJobTarget,
+  selectBestFittingExperience,
+  validateSelectedResumeEvidence,
+  ensureRequiredRolesSelected,
+  generateResume,
+  extractJobDescription,
+  extractCleanedJobDescription,
+  collapseBlankLines,
+} from "./lib/generateResume";
+import { summarizeCoverage } from "./lib/workHistoryTimeline";
+import { WorkHistoryTimeline } from "./components/WorkHistoryTimeline";
+import { importResume, coerceImportedProfile } from "./lib/importResume";
+import {
+  findMissingExperience,
+  validateMissingExperienceDetails,
+  formatExperienceElaboration,
+  cleanFormattedDetail,
+} from "./lib/reviewExperience";
+import { buildProfileExportPayload } from "./lib/exportProfile";
+import { parseProfileExportFile } from "./lib/importProfile";
+import { printResumePage } from "./lib/exportPdf";
 
 /* ── Component ─────────────────────────────────────────────── */
 export default function App() {
@@ -1747,6 +107,7 @@ export default function App() {
   const [apiKeySaveToast, setApiKeySaveToast] = useState("");
   const [workHistorySaveToast, setWorkHistorySaveToast] = useState("");
   const [workHistorySearch, setWorkHistorySearch] = useState("");
+  const [highlightedWorkId, setHighlightedWorkId] = useState(null);
   const [profileDataToast, setProfileDataToast] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [generateStatus, setGenerateStatus] = useState("");
@@ -2196,7 +557,10 @@ export default function App() {
     if (!resumeCompanyDraft.trim() && !resumeJobTitleDraft.trim()) return;
 
     const resume = createResume(resumeCompanyDraft, resumeJobTitleDraft);
-    setResumes((current) => [...current, resume]);
+    setResumes((current) => [
+      ...current,
+      { ...resume, name: getUniqueResumeName(resume.name, current) },
+    ]);
     setSelectedResumeId(resume.id);
     setMarkdown(resume.content);
     setResumeCompanyDraft("");
@@ -2207,6 +571,32 @@ export default function App() {
   const handleAddWorkHistory = () => {
     setWorkHistory((current) => [...current, createWorkHistoryItem()]);
   };
+
+  // Jump from the timeline popup to a specific position's edit card. Clears any
+  // active search so the target is visible, then scrolls to and highlights it.
+  const handleFocusWorkHistoryRole = useCallback((workId) => {
+    setActiveMainTab("workHistory");
+    setWorkHistorySearch("");
+    setHighlightedWorkId(workId);
+  }, []);
+
+  // Add a position from a timeline gap, pre-filled with the gap's dates so the
+  // new role lands right where the hole is, then jump to it.
+  const handleAddPositionForGap = useCallback((prefill) => {
+    const item = createWorkHistoryItem(prefill ?? {});
+    setWorkHistory((current) => sortWorkHistory([...current, item]));
+    setActiveMainTab("workHistory");
+    setWorkHistorySearch("");
+    setHighlightedWorkId(item.id);
+  }, []);
+
+  useEffect(() => {
+    if (!highlightedWorkId) return;
+    const el = document.getElementById(`work-card-${highlightedWorkId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timeout = setTimeout(() => setHighlightedWorkId(null), 1800);
+    return () => clearTimeout(timeout);
+  }, [highlightedWorkId]);
 
   const handleUpdateWorkHistory = (workId, field, value) => {
     let nextValue = value;
@@ -2383,7 +773,7 @@ export default function App() {
     }
 
     setIsFindingMissingExperience(true);
-    setMissingExperienceStatus("Looking for useful details that are missing from your work history...");
+    setMissingExperienceStatus("Looking for job requirements that are missing from your work history...");
 
     try {
       const parsed = await callLlmForJson(
@@ -2693,13 +1083,21 @@ export default function App() {
       const extractedTarget = validateExtractedJobTarget(targetJson);
       const resumeTitle = titleGeneratedResume(extractedTarget.company, extractedTarget.position);
 
+      // Deterministic, non-LLM rule for which roles must appear so the resume
+      // shows continuous, current employment and covers recent gaps.
+      const coverage = summarizeCoverage(workHistory);
+
       setGenerateStatus("Selecting aligned work history...");
       const selectionJson = await callLlmForJson(
         settingsWithDraftKeys,
-        selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions }),
+        selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions, coverage }),
         null
       );
-      const selectedEvidence = validateSelectedResumeEvidence(selectionJson);
+      const selectedEvidence = ensureRequiredRolesSelected(
+        validateSelectedResumeEvidence(selectionJson),
+        coverage,
+        workHistory
+      );
 
       setGenerateStatus("Generating resume from selected evidence...");
       const text = await callLlm(
@@ -2709,6 +1107,7 @@ export default function App() {
           selectedEvidence,
           instructions: generationInstructions,
           jobTitle: extractedTarget.position,
+          coverage,
         }),
         null
       );
@@ -2720,7 +1119,10 @@ export default function App() {
         content: nextMarkdown,
         updatedAt: new Date().toISOString(),
       };
-      setResumes((current) => [...current, generatedResume]);
+      setResumes((current) => [
+        ...current,
+        { ...generatedResume, name: getUniqueResumeName(generatedResume.name, current) },
+      ]);
       setSelectedResumeId(generatedResume.id);
       setMarkdown(nextMarkdown);
       setGenerateStatus("Generated a new resume.");
@@ -2734,99 +1136,16 @@ export default function App() {
   };
 
   const handleExportPdf = useCallback(() => {
-    const page = pageRef.current;
-    if (!page) return;
-
-    const hiddenEls = [];
-    const ancestorSaved = [];
-    let current = page;
-    while (current.parentElement) {
-      const parent = current.parentElement;
-      Array.from(parent.children).forEach((sibling) => {
-        if (sibling !== current) {
-          hiddenEls.push({ el: sibling, prev: sibling.style.display });
-          sibling.style.display = "none";
-        }
-      });
-      if (parent !== document.body) {
-        ancestorSaved.push({
-          el: parent,
-          overflow: parent.style.overflow,
-          transform: parent.style.transform,
-          position: parent.style.position,
-          visibility: parent.style.visibility,
-          background: parent.style.background,
-        });
-        parent.style.overflow = "visible";
-        parent.style.transform = "none";
-        parent.style.visibility = "visible";
-        parent.style.background = "none";
-      }
-      current = parent;
-    }
-
-    const pageSaved = {
-      position: page.style.position,
-      top: page.style.top,
-      left: page.style.left,
-      transform: page.style.transform,
-      transformOrigin: page.style.transformOrigin,
-      boxShadow: page.style.boxShadow,
-      background: page.style.background,
-    };
-    const printScale = 794 / PAGE_W;
-    page.style.position = "fixed";
-    page.style.top = "0";
-    page.style.left = "0";
-    page.style.transform = `scale(${printScale})`;
-    page.style.transformOrigin = "top left";
-    page.style.boxShadow = "none";
-    page.style.background = "white";
-
-    const guides = page.querySelectorAll("[data-margin-guide],[data-overflow]");
-    guides.forEach((g) => (g.style.display = "none"));
-
-    const style = document.createElement("style");
-    style.textContent = `
-      @page { size: A4; margin: 0; }
-      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-      body::before { display: none !important; }
-    `;
-    document.head.appendChild(style);
-
-    const restore = () => {
-      style.remove();
-      guides.forEach((g) => (g.style.display = ""));
-      Object.assign(page.style, pageSaved);
-      ancestorSaved.forEach((s) => {
-        s.el.style.overflow = s.overflow;
-        s.el.style.transform = s.transform;
-        s.el.style.position = s.position;
-        s.el.style.visibility = s.visibility;
-        s.el.style.background = s.background;
-        s.el.style.display = s.display;
-      });
-      hiddenEls.forEach((h) => (h.el.style.display = h.prev));
-      window.onafterprint = null;
-    };
-
-    const savedTitle = document.title;
-    // Browsers use document.title as the default "Save as PDF" filename.
-    document.title = buildResumeExportName({
-      fullName: profile.name,
-      markdown,
-      company: selectedResume?.company,
-      jobTitle: selectedResume?.jobTitle,
-      updatedAt: selectedResume?.updatedAt,
-    });
-
-    const origRestore = restore;
-    const restoreWithTitle = () => {
-      origRestore();
-      document.title = savedTitle;
-    };
-    window.onafterprint = restoreWithTitle;
-    window.print();
+    printResumePage(
+      pageRef.current,
+      buildResumeExportName({
+        fullName: profile.name,
+        markdown,
+        company: selectedResume?.company,
+        jobTitle: selectedResume?.jobTitle,
+        updatedAt: selectedResume?.updatedAt,
+      })
+    );
   }, [markdown, profile.name, selectedResume]);
 
   const fits = measuredHeight <= maxH;
@@ -3025,7 +1344,12 @@ export default function App() {
           </div>
 
           {sortedWorkHistory.length > 0 && (
-            <div className="px-4 py-3 border-b border-neutral-800">
+            <div className="px-4 py-3 border-b border-neutral-800 space-y-3">
+              <WorkHistoryTimeline
+                workHistory={sortedWorkHistory}
+                onSelectRole={handleFocusWorkHistoryRole}
+                onAddPosition={handleAddPositionForGap}
+              />
               <input
                 type="text"
                 value={workHistorySearch}
@@ -3052,7 +1376,15 @@ export default function App() {
               </div>
             ) : (
               visibleWorkHistory.map((item) => (
-                <div key={item.id} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+                <div
+                  key={item.id}
+                  id={`work-card-${item.id}`}
+                  className={`rounded-xl border bg-neutral-950/40 p-4 transition-shadow duration-500 ${
+                    highlightedWorkId === item.id
+                      ? "border-blue-500 ring-2 ring-blue-500/60"
+                      : "border-neutral-800"
+                  }`}
+                >
                   <div className="flex justify-end mb-3">
                     <button
                       type="button"
@@ -3437,10 +1769,10 @@ export default function App() {
 
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                 <h2 className="text-sm font-semibold text-neutral-200">
-                  Find missing work experience details
+                  Find requirements missing from your work experience
                 </h2>
                 <p className="mt-1 text-sm text-neutral-500">
-                  Compare the job description with your saved work history, then add any missing details to the roles where you actually have that experience.
+                  Analyzes the job description and compares it with your saved work history to identify gaps and then asks you simple questions to address them.
                 </p>
                 <button
                   type="button"
