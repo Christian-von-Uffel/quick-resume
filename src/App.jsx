@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { prepareWithSegments, layout, layoutWithLines } from "@chenglou/pretext";
 
 /* ── Page constants ────────────────────────────────────────── */
@@ -98,6 +99,15 @@ const MONTH_SELECT_OPTIONS = MONTH_OPTIONS.map((label, index) => [
   String(index + 1).padStart(2, "0"),
   label,
 ]);
+
+const EMPTY_POSITION_DRAFT = {
+  position: "",
+  company: "",
+  startMonth: "",
+  startYear: "",
+  endMonth: "",
+  endYear: "",
+};
 
 const MONTH_NAME_TO_NUM = MONTH_OPTIONS.reduce((acc, month, index) => {
   const num = String(index + 1).padStart(2, "0");
@@ -203,7 +213,7 @@ function compareWorkHistoryByDate(a, b) {
   const endDiff =
     workHistorySortScore(b.endMonth, b.endYear) - workHistorySortScore(a.endMonth, a.endYear);
   if (endDiff !== 0) return endDiff;
-  return workHistorySortScore(b.startMonth, b.startYear) - workHistorySortScore(a.startMonth, b.startYear);
+  return workHistorySortScore(b.startMonth, b.startYear) - workHistorySortScore(a.startMonth, a.startYear);
 }
 
 function sortWorkHistory(items) {
@@ -243,6 +253,39 @@ function titleGeneratedResume(company, jobTitle, date = new Date()) {
   return parts.join(" - ");
 }
 
+function formatExportDate(value) {
+  const parsed = value ? new Date(value) : new Date();
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+// Best-effort recovery of company/title from a legacy resume name shaped like
+// "Company - Position - YYYY-M-D" for resumes saved before those fields existed.
+function parseResumeNameParts(name) {
+  const segments = String(name || "")
+    .split(" - ")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.length && /^\d{4}-\d{1,2}-\d{1,2}$/.test(segments[segments.length - 1])) {
+    segments.pop();
+  }
+  return { company: segments[0] ?? "", jobTitle: segments[1] ?? "" };
+}
+
+function buildResumeExportName({ fullName, markdown, company, jobTitle, updatedAt }) {
+  const headingName = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  const name = (fullName || "").trim() || headingName || "Resume";
+  const parts = [
+    name,
+    formatResumeName(company ?? ""),
+    formatResumeName(jobTitle ?? ""),
+    formatExportDate(updatedAt),
+  ].filter(Boolean);
+  return parts.join(" - ");
+}
+
 function getResumeName(md, fallback = "Untitled Resume") {
   const title = md.match(/^#\s+(.+)$/m)?.[1]?.trim();
   const subtitle = md
@@ -263,17 +306,13 @@ function makeEducationId() {
 }
 
 function createEducationItem(values = {}) {
-  const startParts = parseWorkDateParts(values.startDate ?? "");
   const endParts = parseWorkDateParts(values.endDate ?? "");
 
   return {
     id: values.id ?? makeEducationId(),
     school: values.school ?? "",
     degree: values.degree ?? "",
-    startMonth: normalizeWorkMonth(values.startMonth ?? startParts.month),
-    startYear: normalizeWorkYear(values.startYear ?? startParts.year),
-    endMonth: normalizeWorkMonth(values.endMonth ?? endParts.month),
-    endYear: normalizeWorkYear(values.endYear ?? endParts.year),
+    year: normalizeWorkYear(values.year ?? values.endYear ?? endParts.year),
     description: values.description ?? "",
   };
 }
@@ -336,8 +375,11 @@ function createResume(company = "", jobTitle = "") {
   return {
     id: makeResumeId(),
     name,
+    company: company.trim(),
+    jobTitle: jobTitle.trim(),
     content: createResumeMarkdown(roleForMarkdown),
     workHistory: [],
+    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -378,10 +420,13 @@ function buildProfileExportPayload({ profile, workHistory, resumes, selectedResu
     exportedAt: new Date().toISOString(),
     profile,
     workHistory: workHistory.map(normalizeWorkHistoryItem),
-    resumes: resumes.map(({ id, name, content }) => ({
+    resumes: resumes.map(({ id, name, company, jobTitle, content, updatedAt }) => ({
       id,
       name,
+      company,
+      jobTitle,
       content,
+      updatedAt,
     })),
     selectedResumeId,
     llmSettings: {
@@ -403,7 +448,7 @@ function parseProfileExportFile(raw) {
   }
 
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("The file is not a valid Quick Resume export.");
+    throw new Error("The file is not a valid One Resume export.");
   }
 
   const resumes = normalizeResumeList(parsed.resumes);
@@ -658,10 +703,7 @@ function normalizeEducationItem(value = {}) {
     id: value.id,
     school: value.school ?? "",
     degree: value.degree ?? "",
-    startMonth: value.startMonth ?? "",
-    startYear: value.startYear ?? "",
-    endMonth: value.endMonth ?? "",
-    endYear: value.endYear ?? "",
+    year: value.year ?? value.endYear ?? "",
     description: Array.isArray(value.description)
       ? value.description.join("\n")
       : value.description ?? "",
@@ -669,10 +711,7 @@ function normalizeEducationItem(value = {}) {
 }
 
 function compareEducationByDate(a, b) {
-  const endDiff =
-    workHistorySortScore(b.endMonth, b.endYear) - workHistorySortScore(a.endMonth, a.endYear);
-  if (endDiff !== 0) return endDiff;
-  return workHistorySortScore(b.startMonth, b.startYear) - workHistorySortScore(a.startMonth, a.startYear);
+  return workHistorySortScore("", b.year) - workHistorySortScore("", a.year);
 }
 
 function sortEducation(items) {
@@ -695,12 +734,22 @@ function normalizeResume(value, index = 0) {
   const workHistorySource = Array.isArray(stored.workHistory)
     ? stored.workHistory
     : parseWorkHistory(content);
+  const legacyParts = parseResumeNameParts(name);
+  const company = typeof stored.company === "string" && stored.company.trim()
+    ? stored.company.trim()
+    : legacyParts.company;
+  const jobTitle = typeof stored.jobTitle === "string" && stored.jobTitle.trim()
+    ? stored.jobTitle.trim()
+    : legacyParts.jobTitle;
 
   return {
     id: typeof stored.id === "string" && stored.id.trim() ? stored.id : fallback.id,
     name,
+    company,
+    jobTitle,
     content,
     workHistory: workHistorySource.map(normalizeWorkHistoryItem),
+    updatedAt: typeof stored.updatedAt === "string" ? stored.updatedAt : "",
   };
 }
 
@@ -750,10 +799,7 @@ function educationKey(item) {
   return [
     item.school,
     item.degree,
-    item.startMonth,
-    item.startYear,
-    item.endMonth,
-    item.endYear,
+    item.year,
   ]
     .map((part) => String(part ?? "").trim().toLowerCase())
     .join("|");
@@ -851,11 +897,17 @@ function normalizeMissingExperienceDetail(value) {
 
   if (!isSpecificExperienceQuestion(question)) return null;
 
+  const answerPlaceholder =
+    typeof value.answerPlaceholder === "string" && value.answerPlaceholder.trim()
+      ? value.answerPlaceholder.trim()
+      : `Yes, I ${skill.charAt(0).toLowerCase()}${skill.slice(1)}...`;
+
   return {
     skill,
     whyItMatters: typeof value.whyItMatters === "string" ? value.whyItMatters.trim() : "",
     question,
     plainspokenDetail,
+    answerPlaceholder,
   };
 }
 
@@ -946,6 +998,42 @@ function readFileAsText(file) {
   });
 }
 
+// Some models reject optional sampling parameters (e.g. OpenAI's reasoning
+// models don't accept `temperature`). Rather than maintain a per-model
+// allowlist, POST the request and, if the API rejects a parameter as
+// unsupported, drop that parameter and retry. This keeps a single code path
+// working across providers and future models.
+async function postModelJson(url, headers, body, fallbackMessage) {
+  let attempt = { ...body };
+
+  // Guard against infinite loops; there are only a handful of optional params.
+  for (let i = 0; i < 4; i += 1) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(attempt),
+    });
+
+    const data = await response.json();
+    if (response.ok) return data;
+
+    const message = data.error?.message ?? "";
+    const unsupportedParam = /unsupported parameter|not supported with this model/i.test(message)
+      ? message.match(/'([^']+)'/)?.[1] ?? null
+      : null;
+
+    if (unsupportedParam && Object.prototype.hasOwnProperty.call(attempt, unsupportedParam)) {
+      const { [unsupportedParam]: _removed, ...rest } = attempt;
+      attempt = rest;
+      continue;
+    }
+
+    throw new Error(message || fallbackMessage);
+  }
+
+  throw new Error(fallbackMessage);
+}
+
 async function callGemini({ apiKey, model, prompt, file }) {
   const parts = [{ text: prompt }];
   if (file) {
@@ -957,19 +1045,15 @@ async function callGemini({ apiKey, model, prompt, file }) {
     });
   }
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const data = await postModelJson(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {},
+    {
       contents: [{ role: "user", parts }],
       generationConfig: { temperature: 0.2 },
-    }),
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? "Gemini request failed.");
-  }
+    },
+    "Gemini request failed."
+  );
 
   return data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n").trim() ?? "";
 }
@@ -986,23 +1070,16 @@ async function callOpenAI({ apiKey, model, prompt, file }) {
     );
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
+  const data = await postModelJson(
+    "https://api.openai.com/v1/responses",
+    { Authorization: `Bearer ${apiKey}` },
+    {
       model,
       input: [{ role: "user", content }],
       temperature: 0.2,
-    }),
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? "OpenAI request failed.");
-  }
+    },
+    "OpenAI request failed."
+  );
 
   if (data.output_text) return data.output_text.trim();
 
@@ -1027,25 +1104,20 @@ async function callAnthropic({ apiKey, model, prompt, file }) {
     });
   }
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const data = await postModelJson(
+    "https://api.anthropic.com/v1/messages",
+    {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
+    {
       model,
       max_tokens: 8192,
       temperature: 0.2,
       messages: [{ role: "user", content }],
-    }),
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? "Anthropic request failed.");
-  }
+    },
+    "Anthropic request failed."
+  );
 
   return data.content?.map((block) => block.text ?? "").join("\n").trim() ?? "";
 }
@@ -1198,7 +1270,7 @@ Start — End
 ## EDUCATION
 
 ### Degree or Certification — School
-Details
+Year · Details
 
 ## SKILLS
 
@@ -1281,6 +1353,12 @@ function extractCleanedJobDescription(text) {
   return textWithoutTags;
 }
 
+function collapseBlankLines(text) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/(?:[ \t]*\n){2,}[ \t]*/g, "\n");
+}
+
 function buildJobTargetPrompt(jobDescription) {
   return `<task>
 Extract the company and position from this job description for a saved resume title.
@@ -1326,6 +1404,7 @@ ${jobDescription}
 - Write questions in natural, active, plainspoken language—exactly how a recruiter or hiring manager would ask a candidate during an interview. Avoid robotic, academic, corporate, or policy-heavy jargon.
 - Each question must be extremely simple and focus on exactly ONE discrete topic or skill that can be answered with a clear "yes" or "no". Never ask multi-part questions.
 - Keep "plainspokenDetail" simple, factual, and reusable as a bullet point in a work history description (e.g., "Conducted customer discovery interviews to identify user needs.").
+- Write "answerPlaceholder" as a short, first-person example answer that starts with "Yes, I" and hints at the kind of specifics we want (what they did and, when natural, what came of it). Keep it realistic and plainspoken, not fancy. For "Do you have experience designing product literature?" a good placeholder is "Yes, I designed product brochures and one-pagers our sales team handed out at trade shows."
 
 CRITICAL VALIDATION RULES - Violating these will cause the question to be rejected:
 1. Do NOT use the word "and" or "or" anywhere in the question (split combined requirements into separate questions).
@@ -1348,11 +1427,52 @@ Return only valid JSON matching the schema below. Do not wrap it in markdown blo
       "skill": "Specific skill or detail from the job description (e.g., Customer discovery interviews)",
       "whyItMatters": "Short reason this appears important in the job description.",
       "question": "Do you have experience...",
-      "plainspokenDetail": "Reusable work history detail (e.g., Conducted customer discovery interviews to identify user needs.)"
+      "plainspokenDetail": "Reusable work history detail (e.g., Conducted customer discovery interviews to identify user needs.)",
+      "answerPlaceholder": "Yes, I ... (a short first-person example answer that fits the question)"
     }
   ]
 }
 </schema>`;
+}
+
+function formatExperienceElaboration({ question, answer }) {
+  return `<task>
+Rewrite the person's spoken answer into ONE clean, factual sentence describing what they did.
+</task>
+
+<question>
+${question}
+</question>
+
+<answer>
+${answer}
+</answer>
+
+<instructions>
+- Keep the person's own wording and level of detail. Do NOT add buzzwords, corporate jargon, or embellishment, and do NOT make it sound fancier than what they actually said.
+- Remove conversational lead-ins and any direct answer to the question ("Yes, I", "Yeah", "Well", "So", "Basically", "I did"). Start with a past-tense action verb.
+- Keep every concrete fact the person gave: names, places, numbers, tools, dates, and outcomes. Invent nothing.
+- When the answer includes a result, follow a simple "did X, which resulted in Y" shape. Otherwise just state plainly what they did.
+- Fix only grammar, spelling, capitalization, and punctuation. Capitalize proper nouns correctly (e.g., "PAX East", "PS4").
+- Return it as a single line with no line breaks and no leading bullet character or dash.
+- If the answer has no usable detail, just return the answer cleaned up as best you can.
+</instructions>
+
+Return ONLY the rewritten sentence as plain text. No quotes, no labels, no explanation, no markdown.`;
+}
+
+function cleanFormattedDetail(text) {
+  if (typeof text !== "string") return "";
+  let cleaned = text.trim();
+
+  const fenced = cleaned.match(/```(?:\w+)?\s*([\s\S]*?)```/);
+  if (fenced) cleaned = fenced[1].trim();
+
+  cleaned = cleaned.replace(/\s*\n+\s*/g, " ").trim();
+  cleaned = cleaned.replace(/^[-•*]\s*/, "");
+  cleaned = cleaned.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "").trim();
+
+  return cleaned;
 }
 
 /* ── Parse markdown into blocks ────────────────────────────── */
@@ -1557,6 +1677,7 @@ export default function App() {
   });
   const [apiKeySaveToast, setApiKeySaveToast] = useState("");
   const [workHistorySaveToast, setWorkHistorySaveToast] = useState("");
+  const [workHistorySearch, setWorkHistorySearch] = useState("");
   const [profileDataToast, setProfileDataToast] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [generateStatus, setGenerateStatus] = useState("");
@@ -1572,7 +1693,13 @@ export default function App() {
   const [dismissedMissingExperienceSkills, setDismissedMissingExperienceSkills] = useState([]);
   const [missingExperiencePositionFilters, setMissingExperiencePositionFilters] = useState({});
   const [missingExperienceSelectedPositions, setMissingExperienceSelectedPositions] = useState({});
+  // Raw answers keyed by skill, then by work-history id: { [skill]: { [workId]: text } }
+  const [missingExperienceElaborations, setMissingExperienceElaborations] = useState({});
+  const [isSavingMissingExperience, setIsSavingMissingExperience] = useState(false);
   const [missingExperienceSaveToast, setMissingExperienceSaveToast] = useState("");
+  // Which detail's skill triggered the "add a missing position" modal (null = closed)
+  const [addPositionForSkill, setAddPositionForSkill] = useState(null);
+  const [newPositionDraft, setNewPositionDraft] = useState(EMPTY_POSITION_DRAFT);
   const [isImporting, setIsImporting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFindingMissingExperience, setIsFindingMissingExperience] = useState(false);
@@ -1593,6 +1720,10 @@ export default function App() {
   const [isCreateResumeOpen, setIsCreateResumeOpen] = useState(false);
   const [resumeCompanyDraft, setResumeCompanyDraft] = useState("");
   const [resumeJobTitleDraft, setResumeJobTitleDraft] = useState("");
+  const [theme, setTheme] = useState(() => {
+    if (typeof window === "undefined") return "light";
+    return window.localStorage.getItem("theme") === "dark" ? "dark" : "light";
+  });
   const pageRef = useRef(null);
   const previewRef = useRef(null);
   const resumeMenuRef = useRef(null);
@@ -1602,7 +1733,25 @@ export default function App() {
   const profileDataToastTimeoutRef = useRef(null);
   const missingExperienceSaveToastTimeoutRef = useRef(null);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("dark", theme === "dark");
+    window.localStorage.setItem("theme", theme);
+  }, [theme]);
+
   const sortedWorkHistory = useMemo(() => sortWorkHistory(workHistory), [workHistory]);
+  const visibleWorkHistory = useMemo(() => {
+    const normalized = workHistorySearch.trim().toLowerCase();
+    if (!normalized) return sortedWorkHistory;
+    return sortedWorkHistory.filter((item) => {
+      const searchableText = [item.position, item.company].filter(Boolean).join(" ").toLowerCase();
+      return searchableText.includes(normalized);
+    });
+  }, [sortedWorkHistory, workHistorySearch]);
+  const sortedEducation = useMemo(
+    () => sortEducation(profile.education ?? []),
+    [profile.education]
+  );
   const activeModelOptions = useMemo(
     () => modelOptionsByProvider[llmSettings.provider] ?? FALLBACK_MODEL_OPTIONS[llmSettings.provider] ?? [],
     [llmSettings.provider, modelOptionsByProvider]
@@ -1623,6 +1772,21 @@ export default function App() {
         (detail) => !dismissedMissingExperienceSkills.includes(detail.skill)
       ),
     [dismissedMissingExperienceSkills, missingExperienceDetails]
+  );
+  const totalSelectedMissingExperiencePositions = useMemo(
+    () =>
+      visibleMissingExperienceDetails.reduce(
+        (total, detail) =>
+          confirmedMissingExperienceSkills.includes(detail.skill)
+            ? total + (missingExperienceSelectedPositions[detail.skill]?.length ?? 0)
+            : total,
+        0
+      ),
+    [
+      visibleMissingExperienceDetails,
+      confirmedMissingExperienceSkills,
+      missingExperienceSelectedPositions,
+    ]
   );
   const workHistoryByPositionCompany = useMemo(
     () =>
@@ -1810,6 +1974,7 @@ export default function App() {
     setDismissedMissingExperienceSkills([]);
     setMissingExperiencePositionFilters({});
     setMissingExperienceSelectedPositions({});
+    setMissingExperienceElaborations({});
     setMissingExperienceSaveToast("");
     setMissingExperienceStatus("");
   };
@@ -1822,6 +1987,7 @@ export default function App() {
           ? {
               ...resume,
               content: nextMarkdown,
+              updatedAt: new Date().toISOString(),
               ...(nextName ? { name: nextName } : {}),
             }
           : resume
@@ -2016,6 +2182,32 @@ export default function App() {
     setWorkHistory((current) => current.filter((item) => item.id !== workId));
   };
 
+  const handleAddEducation = () => {
+    setProfile((current) => ({
+      ...current,
+      education: [...(current.education ?? []), createEducationItem()],
+    }));
+  };
+
+  const handleUpdateEducation = (eduId, field, value) => {
+    const nextValue = field === "year" ? normalizeWorkYear(value) : value;
+    setProfile((current) => ({
+      ...current,
+      education: (current.education ?? []).map((item) =>
+        item.id === eduId
+          ? normalizeEducationItem({ ...item, [field]: nextValue })
+          : item
+      ),
+    }));
+  };
+
+  const handleDeleteEducation = (eduId) => {
+    setProfile((current) => ({
+      ...current,
+      education: (current.education ?? []).filter((item) => item.id !== eduId),
+    }));
+  };
+
   const handleScrapeJobPage = async () => {
     if (!scrapeUrl.trim()) return;
     setIsScraping(true);
@@ -2136,6 +2328,7 @@ export default function App() {
       setDismissedMissingExperienceSkills([]);
       setMissingExperiencePositionFilters({});
       setMissingExperienceSelectedPositions({});
+      setMissingExperienceElaborations({});
       setMissingExperienceSaveToast("");
       setMissingExperienceStatus(
         details.length
@@ -2158,12 +2351,69 @@ export default function App() {
       const { [skill]: _removed, ...remaining } = current;
       return remaining;
     });
+    setMissingExperienceElaborations((current) => {
+      const { [skill]: _removed, ...remaining } = current;
+      return remaining;
+    });
   };
 
   const handleConfirmMissingExperienceDetail = (skill) => {
     setConfirmedMissingExperienceSkills((current) =>
       current.includes(skill) ? current : [...current, skill]
     );
+  };
+
+  const handleMissingExperienceElaborationChange = (skill, workId, value) => {
+    setMissingExperienceElaborations((current) => ({
+      ...current,
+      [skill]: {
+        ...(current[skill] ?? {}),
+        [workId]: value,
+      },
+    }));
+  };
+
+  const handleOpenAddPosition = (skill) => {
+    setNewPositionDraft(EMPTY_POSITION_DRAFT);
+    setAddPositionForSkill(skill);
+  };
+
+  const handleCloseAddPosition = () => {
+    setAddPositionForSkill(null);
+    setNewPositionDraft(EMPTY_POSITION_DRAFT);
+  };
+
+  const handleNewPositionDraftChange = (field, value) => {
+    setNewPositionDraft((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleAddMissingPosition = (e) => {
+    e.preventDefault();
+    const skill = addPositionForSkill;
+    if (!skill) return;
+
+    const position = newPositionDraft.position.trim();
+    const company = newPositionDraft.company.trim();
+    if (!position && !company) return;
+
+    const item = createWorkHistoryItem({
+      position,
+      company,
+      startMonth: newPositionDraft.startMonth,
+      startYear: newPositionDraft.startYear,
+      endMonth: newPositionDraft.endMonth,
+      endYear: newPositionDraft.endYear,
+    });
+
+    setWorkHistory((current) => sortWorkHistory([...current, item]));
+    // Auto-select the new role for this question and clear the search so it stays visible,
+    // letting the user pop straight back to filling in the answer that prompted it.
+    setMissingExperienceSelectedPositions((current) => ({
+      ...current,
+      [skill]: [...(current[skill] ?? []), item.id],
+    }));
+    setMissingExperiencePositionFilters((current) => ({ ...current, [skill]: "" }));
+    handleCloseAddPosition();
   };
 
   const handleMissingExperiencePositionFilterChange = (skill, value) => {
@@ -2200,53 +2450,123 @@ export default function App() {
     }, 4000);
   };
 
-  const handleSaveMissingExperienceDetail = (detail) => {
-    const nextLine = detail.plainspokenDetail.replace(/^[-•]\s*/, "").trim();
-    if (!nextLine) return;
+  const handleSaveMissingExperienceDetails = async () => {
+    const confirmedDetails = visibleMissingExperienceDetails.filter((detail) =>
+      confirmedMissingExperienceSkills.includes(detail.skill)
+    );
 
-    const selectedWorkIds = missingExperienceSelectedPositions[detail.skill] ?? [];
-    if (selectedWorkIds.length === 0) {
-      setMissingExperienceStatus("Select at least one position before saving.");
+    // One task per (question, selected position). The typed answer, if any, gets
+    // rewritten by the model; otherwise we fall back to the generic detail.
+    const tasks = [];
+    for (const detail of confirmedDetails) {
+      const selectedWorkIds = missingExperienceSelectedPositions[detail.skill] ?? [];
+      for (const workId of selectedWorkIds) {
+        tasks.push({
+          detail,
+          workId,
+          answer: (missingExperienceElaborations[detail.skill]?.[workId] ?? "").trim(),
+        });
+      }
+    }
+
+    if (tasks.length === 0) {
+      setMissingExperienceStatus("Pick at least one position for a question before saving.");
       return;
     }
 
-    const selectedWorkIdSet = new Set(selectedWorkIds);
-    let savedCount = 0;
+    setIsSavingMissingExperience(true);
+    setMissingExperienceStatus("");
 
-    const nextWorkHistory = sortWorkHistory(
-      workHistory.map((item) => {
-        if (!selectedWorkIdSet.has(item.id)) return item;
+    try {
+      const settings = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
+      const resolved = await Promise.all(
+        tasks.map(async (task) => {
+          const fallback = task.detail.plainspokenDetail.replace(/^[-•]\s*/, "").trim();
+          if (!task.answer) {
+            return { workId: task.workId, line: fallback };
+          }
+          const text = await callLlm(
+            settings,
+            formatExperienceElaboration({ question: task.detail.question, answer: task.answer }),
+            null
+          );
+          return { workId: task.workId, line: cleanFormattedDetail(text) || fallback };
+        })
+      );
 
-        const lines = item.description
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
-        const alreadyListed = lines.some(
-          (line) => line.toLowerCase() === nextLine.toLowerCase()
-        );
+      const linesByWorkId = new Map();
+      for (const { workId, line } of resolved) {
+        if (!line) continue;
+        const existing = linesByWorkId.get(workId) ?? [];
+        existing.push(line);
+        linesByWorkId.set(workId, existing);
+      }
 
-        if (alreadyListed) return item;
+      let savedCount = 0;
+      const nextWorkHistory = sortWorkHistory(
+        workHistory.map((item) => {
+          const newLines = linesByWorkId.get(item.id);
+          if (!newLines || newLines.length === 0) return item;
 
-        savedCount += 1;
-        return normalizeWorkHistoryItem({
-          ...item,
-          description: [...lines, nextLine].join("\n"),
-        });
-      })
-    );
+          const existing = item.description.split("\n").map((line) => line.trim()).filter(Boolean);
+          const existingLower = new Set(existing.map((line) => line.toLowerCase()));
+          const additions = [];
+          for (const line of newLines) {
+            const key = line.toLowerCase();
+            if (existingLower.has(key)) continue;
+            existingLower.add(key);
+            additions.push(line);
+          }
+          if (additions.length === 0) return item;
 
-    setWorkHistory(nextWorkHistory);
-    setMissingExperienceSelectedPositions((current) => ({
-      ...current,
-      [detail.skill]: [],
-    }));
+          savedCount += additions.length;
+          return normalizeWorkHistoryItem({
+            ...item,
+            description: [...existing, ...additions].join("\n"),
+          });
+        })
+      );
 
-    const positionLabel = savedCount === 1 ? "position" : "positions";
-    showMissingExperienceSaveToast(
-      savedCount > 0
-        ? `Saved experience detail to ${savedCount} ${positionLabel}.`
-        : "Those experience details were already saved."
-    );
+      setWorkHistory(nextWorkHistory);
+
+      // Drop the questions we just saved so they leave the list (and the whole
+      // section disappears once every question has been handled).
+      const savedSkills = new Set(
+        confirmedDetails
+          .filter((detail) => (missingExperienceSelectedPositions[detail.skill] ?? []).length > 0)
+          .map((detail) => detail.skill)
+      );
+      setDismissedMissingExperienceSkills((current) => {
+        const additions = [...savedSkills].filter((skill) => !current.includes(skill));
+        return additions.length ? [...current, ...additions] : current;
+      });
+      setConfirmedMissingExperienceSkills((current) =>
+        current.filter((skill) => !savedSkills.has(skill))
+      );
+      setMissingExperienceSelectedPositions((current) => {
+        const next = { ...current };
+        for (const skill of savedSkills) delete next[skill];
+        return next;
+      });
+      setMissingExperienceElaborations((current) => {
+        const next = { ...current };
+        for (const skill of savedSkills) delete next[skill];
+        return next;
+      });
+
+      const positionLabel = savedCount === 1 ? "position" : "positions";
+      showMissingExperienceSaveToast(
+        savedCount > 0
+          ? `Saved to ${savedCount} ${positionLabel}.`
+          : "Those details were already saved."
+      );
+    } catch (error) {
+      setMissingExperienceStatus(
+        error instanceof Error ? error.message : "Could not save those experience details."
+      );
+    } finally {
+      setIsSavingMissingExperience(false);
+    }
   };
 
   const handleImportResume = async (event) => {
@@ -2325,8 +2645,17 @@ export default function App() {
         null
       );
       const nextMarkdown = text.replace(/^```(?:markdown)?\s*/i, "").replace(/```$/i, "").trim();
-      updateSelectedResumeMarkdown(nextMarkdown, resumeTitle);
-      setGenerateStatus("Generated the selected resume.");
+      // Save each generation as its own resume so existing resumes are never overwritten.
+      const generatedResume = {
+        ...createResume(extractedTarget.company, extractedTarget.position),
+        name: resumeTitle,
+        content: nextMarkdown,
+        updatedAt: new Date().toISOString(),
+      };
+      setResumes((current) => [...current, generatedResume]);
+      setSelectedResumeId(generatedResume.id);
+      setMarkdown(nextMarkdown);
+      setGenerateStatus("Generated a new resume.");
       setActiveMainTab("resume");
       setActiveResumeTab("editor");
     } catch (error) {
@@ -2414,8 +2743,14 @@ export default function App() {
     };
 
     const savedTitle = document.title;
-    const nameMatch = markdown.match(/^# (.+)/m);
-    document.title = nameMatch ? `${nameMatch[1]} Resume` : "Resume";
+    // Browsers use document.title as the default "Save as PDF" filename.
+    document.title = buildResumeExportName({
+      fullName: profile.name,
+      markdown,
+      company: selectedResume?.company,
+      jobTitle: selectedResume?.jobTitle,
+      updatedAt: selectedResume?.updatedAt,
+    });
 
     const origRestore = restore;
     const restoreWithTitle = () => {
@@ -2424,17 +2759,18 @@ export default function App() {
     };
     window.onafterprint = restoreWithTitle;
     window.print();
-  }, [markdown]);
+  }, [markdown, profile.name, selectedResume]);
 
   const fits = measuredHeight <= maxH;
   const pct = Math.min((measuredHeight / maxH) * 100, 100);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-white">
-        <div className="flex flex-wrap gap-2">
+      <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-neutral-50">
+        <div className="flex flex-wrap items-center gap-2">
           {[
             ["workHistory", "Work history"],
+            ["education", "Education"],
             ["profile", "Profile"],
             ["ai", "Generate Resume"],
             ["resume", "View Resumes"],
@@ -2446,17 +2782,38 @@ export default function App() {
               onClick={() => setActiveMainTab(key)}
               className={`rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
                 activeMainTab === key
-                  ? "border-neutral-600 bg-neutral-800 text-white"
-                  : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-white"
+                  ? "border-neutral-600 bg-neutral-800 text-neutral-50"
+                  : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-50"
               }`}
             >
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            className="ml-auto rounded-lg border border-neutral-700 p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? (
+              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path
+                  fillRule="evenodd"
+                  d="M10 2a.75.75 0 01.75.75v1a.75.75 0 01-1.5 0v-1A.75.75 0 0110 2zM10 15a.75.75 0 01.75.75v1a.75.75 0 01-1.5 0v-1A.75.75 0 0110 15zM10 6a4 4 0 100 8 4 4 0 000-8zM15.657 5.404a.75.75 0 10-1.06-1.06l-.708.707a.75.75 0 001.06 1.06l.708-.707zM6.11 14.895a.75.75 0 10-1.06-1.06l-.708.707a.75.75 0 001.06 1.06l.708-.707zM18 10a.75.75 0 01-.75.75h-1a.75.75 0 010-1.5h1A.75.75 0 0118 10zM5 10a.75.75 0 01-.75.75h-1a.75.75 0 010-1.5h1A.75.75 0 015 10zM14.596 15.657a.75.75 0 001.06-1.06l-.707-.708a.75.75 0 00-1.06 1.06l.707.708zM5.105 6.11a.75.75 0 001.06-1.06l-.707-.708a.75.75 0 00-1.06 1.06l.707.708z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            ) : (
+              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M7.455 2.004a.75.75 0 01.26.77 7 7 0 009.958 7.967.75.75 0 011.067.853A8.5 8.5 0 116.647 1.921a.75.75 0 01.808.083z" />
+              </svg>
+            )}
+          </button>
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col sm:flex-row bg-neutral-900 text-white min-h-0 overflow-hidden">
+      <main className="flex-1 flex flex-col sm:flex-row bg-neutral-900 text-neutral-50 min-h-0 overflow-hidden">
         {/* ── Mobile tab bar ─────────────────────────── */}
         {activeMainTab === "resume" && (
           <div className="flex gap-2 px-4 py-2 sm:hidden border-b border-neutral-800 shrink-0">
@@ -2467,8 +2824,8 @@ export default function App() {
                 onClick={() => setActiveResumeTab(key)}
                 className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium uppercase tracking-widest transition-colors ${
                   activeResumeTab === key
-                    ? "border-neutral-600 bg-neutral-800 text-white"
-                    : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-white"
+                    ? "border-neutral-600 bg-neutral-800 text-neutral-50"
+                    : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-50"
                 }`}
               >
                 {label}
@@ -2579,7 +2936,7 @@ export default function App() {
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <label className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-500/20">
+              <label className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20">
                 <input
                   type="file"
                   accept="application/pdf,image/*"
@@ -2592,12 +2949,24 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleAddWorkHistory}
-                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
               >
                 Add Position
               </button>
             </div>
           </div>
+
+          {sortedWorkHistory.length > 0 && (
+            <div className="px-4 py-3 border-b border-neutral-800">
+              <input
+                type="text"
+                value={workHistorySearch}
+                onChange={(e) => setWorkHistorySearch(e.target.value)}
+                placeholder="Search positions or companies"
+                className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+              />
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4 pagefit-scrollbar">
             {importStatus && (
@@ -2609,8 +2978,12 @@ export default function App() {
               <div className="rounded-xl border border-dashed border-neutral-700 p-4 text-sm text-neutral-500">
                 Add every role you want available for this resume.
               </div>
+            ) : visibleWorkHistory.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-neutral-700 p-4 text-sm text-neutral-500">
+                No positions match that search.
+              </div>
             ) : (
-              sortedWorkHistory.map((item) => (
+              visibleWorkHistory.map((item) => (
                 <div key={item.id} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                   <div className="flex justify-end mb-3">
                     <button
@@ -2734,6 +3107,103 @@ export default function App() {
           </div>
         </div>
 
+        {/* ── Education ───────────────────────────────── */}
+        <div className={`flex-1 min-w-0 self-stretch flex-col min-h-0 ${activeMainTab === "education" ? "flex" : "hidden"}`}>
+          <div className="px-4 py-3 border-b border-neutral-800 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-neutral-500 uppercase tracking-widest">
+                Education
+              </p>
+              <p className="mt-1 text-xs text-neutral-500">
+                Degrees and certifications available to every generated resume.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleAddEducation}
+              className="shrink-0 rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+            >
+              Add Education
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 pagefit-scrollbar">
+            {sortedEducation.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-neutral-700 p-4 text-sm text-neutral-500">
+                Add any degrees or certifications you want available for your resumes.
+              </div>
+            ) : (
+              sortedEducation.map((item) => (
+                <div key={item.id} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+                  <div className="flex justify-end mb-3">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteEducation(item.id)}
+                      className="rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-red-300"
+                    >
+                      Delete
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="block">
+                      <span className="block text-xs text-neutral-500 mb-1">
+                        School
+                      </span>
+                      <input
+                        type="text"
+                        value={item.school}
+                        onChange={(e) => handleUpdateEducation(item.id, "school", e.target.value)}
+                        placeholder="University of California, Berkeley"
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="block text-xs text-neutral-500 mb-1">
+                        Degree or Certificate
+                      </span>
+                      <input
+                        type="text"
+                        value={item.degree}
+                        onChange={(e) => handleUpdateEducation(item.id, "degree", e.target.value)}
+                        placeholder="B.S. in Computer Science"
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="block text-xs text-neutral-500 mb-1">
+                        Year
+                      </span>
+                      <input
+                        type="text"
+                        value={item.year ?? ""}
+                        onChange={(e) => handleUpdateEducation(item.id, "year", e.target.value)}
+                        placeholder="2020"
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="block text-xs text-neutral-500 mb-1">
+                        Description
+                      </span>
+                      <textarea
+                        value={item.description}
+                        onChange={(e) => handleUpdateEducation(item.id, "description", e.target.value)}
+                        placeholder="Honors, GPA, relevant coursework, or activities (optional)."
+                        rows={3}
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
         {/* ── Generate resume ─────────────────────────── */}
         <div className={`flex-1 min-w-0 self-stretch flex-col min-h-0 ${activeMainTab === "ai" ? "flex" : "hidden"}`}>
           <div className="px-4 py-3 border-b border-neutral-800">
@@ -2791,6 +3261,19 @@ export default function App() {
                     <textarea
                       value={generationInstructions}
                       onChange={(e) => handleGenerationInstructionsChange(e.target.value)}
+                      onPaste={(e) => {
+                        const pasted = e.clipboardData.getData("text");
+                        if (!pasted) return;
+                        e.preventDefault();
+                        const cleaned = collapseBlankLines(pasted);
+                        const target = e.target;
+                        const { selectionStart, selectionEnd, value } = target;
+                        const nextValue =
+                          value.slice(0, selectionStart) + cleaned + value.slice(selectionEnd);
+                        const nextCursor = selectionStart + cleaned.length;
+                        flushSync(() => handleGenerationInstructionsChange(nextValue));
+                        target.setSelectionRange(nextCursor, nextCursor);
+                      }}
                       placeholder="Paste a job description or notes about the role you want to target."
                       rows={7}
                       className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
@@ -2818,7 +3301,7 @@ export default function App() {
                           type="button"
                           onClick={handleScrapeJobPage}
                           disabled={isScraping || !scrapeUrl.trim()}
-                          className="w-full sm:w-auto rounded-lg border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-50 h-[38px] flex items-center justify-center gap-1.5"
+                          className="w-full sm:w-auto rounded-lg border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:text-neutral-50 disabled:cursor-not-allowed disabled:opacity-50 h-[38px] flex items-center justify-center gap-1.5"
                         >
                           {isScraping ? (
                             <>
@@ -2871,7 +3354,7 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={handleSaveApiKeys}
-                                className="rounded-md border border-neutral-700 bg-neutral-800 px-2.5 py-1.5 text-xs font-medium text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-white"
+                                className="rounded-md border border-neutral-700 bg-neutral-800 px-2.5 py-1.5 text-xs font-medium text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-neutral-50"
                               >
                                 Save Key
                               </button>
@@ -2895,9 +3378,9 @@ export default function App() {
                   type="button"
                   onClick={handleFindMissingExperienceDetails}
                   disabled={isFindingMissingExperience || !generationInstructions.trim() || sortedWorkHistory.length === 0}
-                  className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isFindingMissingExperience ? "Finding details..." : "Find missing details"}
+                  {isFindingMissingExperience ? "Analyzing work history..." : "Find missing experience"}
                 </button>
                 {missingExperienceStatus && (
                   <p className="mt-3 text-sm text-neutral-400">
@@ -2905,7 +3388,7 @@ export default function App() {
                   </p>
                 )}
                 {missingExperienceSaveToast && (
-                  <div role="status" className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+                  <div role="status" className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-100">
                     {missingExperienceSaveToast}
                   </div>
                 )}
@@ -2931,7 +3414,7 @@ export default function App() {
                               disabled={hasConfirmedExperience}
                               className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                                 hasConfirmedExperience
-                                  ? "cursor-default border-amber-500/40 bg-amber-500/10 text-amber-200"
+                                  ? "cursor-default border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200"
                                   : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
                               }`}
                             >
@@ -2949,7 +3432,7 @@ export default function App() {
                         {hasConfirmedExperience && (
                           <div className="mt-3">
                             <p className="text-xs text-neutral-500">
-                              Which positions should this be added to?
+                              Which positions should this be added to? Select a role to add an example from it.
                             </p>
                             {(() => {
                               const positionFilter = missingExperiencePositionFilters[detail.skill] ?? "";
@@ -2958,8 +3441,8 @@ export default function App() {
                                 const searchableText = [item.position, item.company].filter(Boolean).join(" ").toLowerCase();
                                 return !normalizedPositionFilter || searchableText.includes(normalizedPositionFilter);
                               });
-                              const selectedWorkIds = missingExperienceSelectedPositions[detail.skill] ?? [];
-                              const selectedWorkIdSet = new Set(selectedWorkIds);
+                              const selectedWorkIdSet = new Set(missingExperienceSelectedPositions[detail.skill] ?? []);
+                              const detailText = detail.plainspokenDetail.replace(/^[-•]\s*/, "").trim().toLowerCase();
 
                               return (
                                 <>
@@ -2970,56 +3453,66 @@ export default function App() {
                                     placeholder="Search positions or companies"
                                     className="mt-2 w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
                                   />
-                                  <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-neutral-800 pagefit-scrollbar">
+                                  <div className="mt-2 max-h-96 overflow-y-auto rounded-lg border border-neutral-800 pagefit-scrollbar">
                                     {filteredWorkHistory.length === 0 ? (
                                       <p className="px-3 py-2 text-sm text-neutral-500">
                                         No positions match that search.
                                       </p>
                                     ) : (
                                       filteredWorkHistory.map((item) => {
-                                        const detailText = detail.plainspokenDetail.replace(/^[-•]\s*/, "").trim().toLowerCase();
                                         const hasDetail = item.description
                                           .split("\n")
                                           .some((line) => line.trim().toLowerCase() === detailText);
                                         const isSelected = selectedWorkIdSet.has(item.id);
                                         const roleLabel = [item.position, item.company].filter(Boolean).join(" at ") || "Untitled role";
+                                        const elaboration = missingExperienceElaborations[detail.skill]?.[item.id] ?? "";
 
                                         return (
-                                          <button
-                                            key={item.id}
-                                            type="button"
-                                            onClick={() => handleToggleMissingExperiencePosition(detail.skill, item.id)}
-                                            disabled={hasDetail}
-                                            className={`flex w-full items-center gap-3 border-b border-neutral-800 px-3 py-2 text-left text-sm transition-colors last:border-b-0 ${
-                                              hasDetail
-                                                ? "cursor-default border-amber-500/20 bg-amber-500/10 text-amber-100"
-                                                : isSelected
-                                                  ? "border-amber-500/20 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"
-                                                : "bg-neutral-950 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
-                                            }`}
-                                          >
-                                            <input
-                                              type="checkbox"
-                                              checked={hasDetail || isSelected}
-                                              readOnly
-                                              className="rounded border-neutral-600 bg-neutral-900 text-amber-400 focus:ring-amber-400"
-                                            />
-                                            <span>{roleLabel}</span>
-                                          </button>
+                                          <div key={item.id} className="border-b border-neutral-800 last:border-b-0">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleToggleMissingExperiencePosition(detail.skill, item.id)}
+                                              disabled={hasDetail}
+                                              className={`flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors ${
+                                                hasDetail
+                                                  ? "cursor-default bg-amber-500/10 text-amber-800 dark:text-amber-100"
+                                                  : isSelected
+                                                    ? "bg-amber-500/10 text-amber-800 dark:text-amber-100 hover:bg-amber-500/20"
+                                                  : "bg-neutral-950 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
+                                              }`}
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={hasDetail || isSelected}
+                                                readOnly
+                                                className="rounded border-neutral-600 bg-neutral-900 text-amber-400 focus:ring-amber-400"
+                                              />
+                                              <span>{roleLabel}</span>
+                                            </button>
+                                            {isSelected && !hasDetail && (
+                                              <div className="border-t border-neutral-800/60 bg-neutral-950 px-3 py-3">
+                                                <textarea
+                                                  value={elaboration}
+                                                  onChange={(e) => handleMissingExperienceElaborationChange(detail.skill, item.id, e.target.value)}
+                                                  rows={3}
+                                                  placeholder={detail.answerPlaceholder}
+                                                  className="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                                                />
+                                              </div>
+                                            )}
+                                          </div>
                                         );
                                       })
                                     )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenAddPosition(detail.skill)}
+                                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-amber-700 dark:text-amber-300 transition-colors hover:bg-neutral-800"
+                                    >
+                                      <span className="text-base leading-none">+</span>
+                                      <span>Add a position that&apos;s missing</span>
+                                    </button>
                                   </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSaveMissingExperienceDetail(detail)}
-                                    disabled={selectedWorkIds.length === 0}
-                                    className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {selectedWorkIds.length > 0
-                                      ? `Save experience details (${selectedWorkIds.length})`
-                                      : "Save experience details"}
-                                  </button>
                                 </>
                               );
                             })()}
@@ -3030,6 +3523,20 @@ export default function App() {
                         })()}
                       </div>
                     ))}
+                    <div className="flex items-center gap-3 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleSaveMissingExperienceDetails}
+                        disabled={isSavingMissingExperience || totalSelectedMissingExperiencePositions === 0}
+                        className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isSavingMissingExperience
+                          ? "Saving..."
+                          : totalSelectedMissingExperiencePositions > 0
+                            ? `Save experience details (${totalSelectedMissingExperiencePositions})`
+                            : "Save experience details"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -3047,7 +3554,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setActiveMainTab("workHistory")}
-                    className="mt-4 rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                    className="mt-4 rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                   >
                     Add work history
                   </button>
@@ -3056,7 +3563,7 @@ export default function App() {
                     type="button"
                     onClick={handleGenerateMarkdown}
                     disabled={isGenerating}
-                    className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isGenerating ? "Generating..." : "Generate resume"}
                   </button>
@@ -3194,7 +3701,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleSaveApiKeys}
-                    className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                    className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                   >
                     Save API keys
                   </button>
@@ -3219,11 +3726,11 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleExportProfileData}
-                    className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                    className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                   >
                     Export profile data
                   </button>
-                  <label className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white">
+                  <label className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50">
                     <input
                       type="file"
                       accept="application/json,.json"
@@ -3245,7 +3752,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsResumeMenuOpen((open) => !open)}
-                className="min-w-0 flex-1 px-3 py-2 text-sm font-medium border border-neutral-700 text-neutral-300 rounded-lg hover:bg-neutral-800 hover:text-white transition-colors flex items-center justify-between gap-2"
+                className="min-w-0 flex-1 px-3 py-2 text-sm font-medium border border-neutral-700 text-neutral-300 rounded-lg hover:bg-neutral-800 hover:text-neutral-50 transition-colors flex items-center justify-between gap-2"
               >
                 <span className="truncate text-left">
                   {selectedResume?.name ?? "Select resume"}
@@ -3277,8 +3784,8 @@ export default function App() {
                       key={resume.id}
                       className={`group flex items-center gap-1 rounded-lg ${
                         resume.id === selectedResumeId
-                          ? "bg-neutral-800 text-white"
-                          : "text-neutral-300 hover:bg-neutral-900 hover:text-white"
+                          ? "bg-neutral-800 text-neutral-50"
+                          : "text-neutral-300 hover:bg-neutral-900 hover:text-neutral-50"
                       }`}
                     >
                       <button
@@ -3298,7 +3805,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleOpenCreateResume}
-                    className="w-full rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                    className="w-full rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                   >
                     Create new resume
                   </button>
@@ -3385,7 +3892,7 @@ export default function App() {
           <button
             type="button"
             onClick={handleExportPdf}
-            className="mx-auto mt-4 w-full max-w-[620px] shrink-0 px-3 py-2 text-sm font-medium bg-white text-neutral-900 rounded-lg hover:bg-neutral-200 transition-colors"
+            className="mx-auto mt-4 w-full max-w-[620px] shrink-0 px-3 py-2 text-sm font-medium bg-neutral-50 text-neutral-900 rounded-lg hover:bg-neutral-200 transition-colors"
           >
             Export as PDF
           </button>
@@ -3418,7 +3925,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsFitSidebarOpen(false)}
-                className="rounded-md p-1.5 text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-white"
+                className="rounded-md p-1.5 text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                 aria-label="Close page fit settings"
               >
                 <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -3439,7 +3946,7 @@ export default function App() {
               }`}
             >
               <div
-                className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
                 style={{ left: 2, transform: autoFit ? "translateX(20px)" : "translateX(0)" }}
               />
             </button>
@@ -3458,7 +3965,7 @@ export default function App() {
                 step={0.5}
                 value={maxFontSize}
                 onChange={(e) => setMaxFontSize(parseFloat(e.target.value))}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-16 text-right">
                 {maxFontSize}px
@@ -3479,7 +3986,7 @@ export default function App() {
                 step={0.01}
                 value={fontSize}
                 onChange={handleSlider}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-16 text-right">
                 {((fontSize / 16) * 100).toFixed(1)}%
@@ -3500,7 +4007,7 @@ export default function App() {
                 step={0.001}
                 value={lineHeightMult}
                 onChange={handleLineHeightSlider}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-14 text-right">
                 {lineHeightMult.toFixed(2)}x
@@ -3521,7 +4028,7 @@ export default function App() {
                 step={1}
                 value={padding}
                 onChange={(e) => setPadding(parseInt(e.target.value))}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-14 text-right">
                 {padding}px
@@ -3548,7 +4055,7 @@ export default function App() {
                 step={1}
                 value={sectionSpacing}
                 onChange={(e) => setSectionSpacing(parseInt(e.target.value))}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-14 text-right">
                 {sectionSpacing}px
@@ -3575,7 +4082,7 @@ export default function App() {
                 step={1}
                 value={itemSpacing}
                 onChange={(e) => setItemSpacing(parseFloat(e.target.value))}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-14 text-right">
                 {itemSpacing}px
@@ -3602,7 +4109,7 @@ export default function App() {
                 step={1}
                 value={separatorSpacing}
                 onChange={(e) => setSeparatorSpacing(parseInt(e.target.value))}
-                className="flex-1 h-1 accent-white"
+                className="flex-1 h-1 accent-neutral-50"
               />
               <span className="text-sm font-mono tabular-nums w-14 text-right">
                 {separatorSpacing}px
@@ -3652,7 +4159,7 @@ export default function App() {
       {(apiKeySaveToast || workHistorySaveToast || profileDataToast) && (
         <div
           role="status"
-          className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-emerald-500/30 bg-neutral-900 px-4 py-3 text-sm text-emerald-200 shadow-lg"
+          className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-emerald-500/30 bg-neutral-900 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-200 shadow-lg"
         >
           {apiKeySaveToast || workHistorySaveToast || profileDataToast}
         </div>
@@ -3665,7 +4172,7 @@ export default function App() {
             className="w-full max-w-sm rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl shadow-black/50"
           >
             <div className="mb-4">
-              <h2 className="text-lg font-semibold text-white">
+              <h2 className="text-lg font-semibold text-neutral-50">
                 Create new resume
               </h2>
               <p className="mt-1 text-sm text-neutral-500">
@@ -3708,16 +4215,126 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsCreateResumeOpen(false)}
-                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white"
+                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-neutral-200 px-3 py-2 text-sm font-medium text-neutral-950 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-lg bg-neutral-200 px-3 py-2 text-sm font-medium text-neutral-950 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
                 disabled={!resumeCompanyDraft.trim() && !resumeJobTitleDraft.trim()}
               >
                 Create resume
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {addPositionForSkill !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            onSubmit={handleAddMissingPosition}
+            className="w-full max-w-md rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl shadow-black/50"
+          >
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-neutral-50">
+                Add a missing position
+              </h2>
+              <p className="mt-1 text-sm text-neutral-500">
+                Add the role now, then pop back to fill in the detail that reminded you of it.
+              </p>
+            </div>
+
+            <label className="block">
+              <span className="block text-xs text-neutral-500 mb-1">Position</span>
+              <input
+                type="text"
+                value={newPositionDraft.position}
+                onChange={(e) => handleNewPositionDraftChange("position", e.target.value)}
+                placeholder="Marketing Manager"
+                autoFocus
+                className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+              />
+            </label>
+
+            <label className="mt-4 block">
+              <span className="block text-xs text-neutral-500 mb-1">Company</span>
+              <input
+                type="text"
+                value={newPositionDraft.company}
+                onChange={(e) => handleNewPositionDraftChange("company", e.target.value)}
+                placeholder="Company name"
+                className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+              />
+            </label>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="block text-xs text-neutral-500 mb-1">Start Month</span>
+                <select
+                  value={normalizeWorkMonth(newPositionDraft.startMonth)}
+                  onChange={(e) => handleNewPositionDraftChange("startMonth", e.target.value)}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 outline-none focus:border-neutral-500"
+                >
+                  <option value="">No month</option>
+                  {MONTH_SELECT_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="block text-xs text-neutral-500 mb-1">Start Year</span>
+                <input
+                  type="text"
+                  value={newPositionDraft.startYear}
+                  onChange={(e) => handleNewPositionDraftChange("startYear", e.target.value)}
+                  placeholder="2022"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                />
+              </label>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="block text-xs text-neutral-500 mb-1">End Month</span>
+                <select
+                  value={normalizeWorkMonth(newPositionDraft.endMonth)}
+                  onChange={(e) => handleNewPositionDraftChange("endMonth", e.target.value)}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 outline-none focus:border-neutral-500"
+                >
+                  <option value="">No month</option>
+                  {MONTH_SELECT_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="block text-xs text-neutral-500 mb-1">End Year</span>
+                <input
+                  type="text"
+                  value={newPositionDraft.endYear}
+                  onChange={(e) => handleNewPositionDraftChange("endYear", e.target.value)}
+                  placeholder="2024 or present"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleCloseAddPosition}
+                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!newPositionDraft.position.trim() && !newPositionDraft.company.trim()}
+                className="rounded-lg bg-neutral-200 px-3 py-2 text-sm font-medium text-neutral-950 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Add position
               </button>
             </div>
           </form>
