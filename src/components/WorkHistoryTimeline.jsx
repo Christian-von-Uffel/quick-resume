@@ -58,6 +58,11 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
   const [ctaVisible, setCtaVisible] = useState(false);
   const [hoverYear, setHoverYear] = useState(null); // year whose gridline is shown
   const [scaleMode, setScaleMode] = useState("recency"); // "recency" | "linear"
+  // Hover-capable pointer (desktop mouse) vs. touch. Drives whether a click on a
+  // block acts directly or first opens the popup.
+  const [canHover, setCanHover] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.("(hover: hover) and (pointer: fine)")?.matches
+  );
   const closeTimer = useRef(null);
   const rootRef = useRef(null);
 
@@ -75,6 +80,16 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
   };
 
   useEffect(() => () => cancelClose(), []);
+
+  // Keep canHover in sync if the primary pointer changes (e.g. a tablet gaining a
+  // mouse). Rare, but cheap to honor.
+  useEffect(() => {
+    const mq = window.matchMedia?.("(hover: hover) and (pointer: fine)");
+    if (!mq) return;
+    const onChange = (event) => setCanHover(event.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
 
   // Dismiss a tapped-open popup on outside tap or Escape (mainly for touch).
   useEffect(() => {
@@ -205,15 +220,24 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
     }
   }
 
-  const runAction = () => {
-    if (!active) return;
-    if (active.roleId) {
+  // Navigate to a role's details, or seed a new position from a gap.
+  const performAction = (data) => {
+    if (!data) return;
+    if (data.roleId) {
       setActive(null);
-      onSelectRole?.(active.roleId);
-    } else if (active.gapPrefill) {
+      onSelectRole?.(data.roleId);
+    } else if (data.gapPrefill) {
       setActive(null);
-      onAddPosition?.(active.gapPrefill);
+      onAddPosition?.(data.gapPrefill);
     }
+  };
+
+  // Clicking a block: on a hovering pointer the popup is already shown, so act
+  // directly rather than making the user chase a tooltip that may have started to
+  // close. On touch, the first tap opens the popup and its own tap runs the action.
+  const handleBlockClick = (data) => {
+    if (canHover) performAction(data);
+    else openPopup(data);
   };
 
   return (
@@ -306,7 +330,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
               }}
               onMouseEnter={() => openPopup(popup)}
               onMouseLeave={scheduleClose}
-              onClick={() => openPopup(popup)}
+              onClick={() => handleBlockClick(popup)}
             />
           );
         })}
@@ -356,7 +380,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
             style={{ left: `${left}%`, width: `${width}%`, minWidth: 6, top, height }}
             onMouseEnter={() => openPopup(popup)}
             onMouseLeave={scheduleClose}
-            onClick={() => openPopup(popup)}
+            onClick={() => handleBlockClick(popup)}
           />
         ))}
 
@@ -375,7 +399,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
               setCtaVisible(true);
             }}
             onMouseLeave={scheduleClose}
-            onClick={runAction}
+            onClick={() => performAction(active)}
           >
             <p className="flex items-center gap-1.5 font-semibold text-neutral-100">
               {active.tone === "role" && (
@@ -385,7 +409,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
               <span>{active.label}</span>
             </p>
             <p className="mt-0.5 text-neutral-400">{active.sublabel}</p>
-            {ctaVisible && (
+            {(canHover || ctaVisible) && (
               <p className={`mt-1 font-medium ${active.tone === "gap" ? "text-amber-400" : "text-blue-400"}`}>
                 {active.tone === "gap" ? "Add a position →" : "Edit this position →"}
               </p>
