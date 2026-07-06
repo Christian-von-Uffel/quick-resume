@@ -253,6 +253,62 @@ export function isSameEmployer(nameA, nameB) {
   return Boolean(a) && a === b;
 }
 
+// Coarse seniority tiers keyed by title keywords, highest match wins. This is a
+// deliberately conservative HEURISTIC used ONLY as a tie-breaker — e.g. to pick a
+// primary among genuinely concurrent roles, or to order same-employer titles that
+// share dates. Real chronology (start/end dates) is always the primary signal for
+// a promotion sequence; this only breaks ties.
+const SENIORITY_TIERS = [
+  { rank: 0, keywords: ["intern", "trainee", "apprentice"] },
+  { rank: 1, keywords: ["junior", "jr", "assistant", "associate", "coordinator", "entry level"] },
+  // rank 2 is the implicit default: an individual contributor with no modifier.
+  { rank: 3, keywords: ["senior", "sr"] },
+  { rank: 4, keywords: ["staff", "principal", "lead"] },
+  { rank: 5, keywords: ["manager", "head"] },
+  { rank: 6, keywords: ["senior manager", "sr manager", "group manager"] },
+  { rank: 7, keywords: ["director"] },
+  { rank: 8, keywords: ["vp", "vice president"] },
+  { rank: 9, keywords: ["svp", "evp", "senior vice president", "executive vice president"] },
+  { rank: 10, keywords: ["chief", "cto", "ceo", "cfo", "coo", "cmo", "president", "founder", "owner", "partner"] },
+];
+
+const DEFAULT_SENIORITY_RANK = 2;
+
+// Best-effort seniority score for a job title; DEFAULT_SENIORITY_RANK when nothing
+// matches. Matching is word-boundary anchored so "lead" never fires on
+// "leadership" and "manager" never fires on "management".
+export function seniorityRank(title) {
+  const text = String(title || "").toLowerCase();
+  if (!text.trim()) return DEFAULT_SENIORITY_RANK;
+  const matched = [];
+  for (const tier of SENIORITY_TIERS) {
+    for (const keyword of tier.keywords) {
+      const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, "\\s+")}\\b`);
+      if (pattern.test(text)) {
+        matched.push(tier.rank);
+        break;
+      }
+    }
+  }
+  return matched.length ? Math.max(...matched) : DEFAULT_SENIORITY_RANK;
+}
+
+// Deterministic "which of these roles should lead" pick — used to choose the
+// primary among concurrent roles. Order: still-ongoing → higher seniority →
+// longer tenure → more recent end → later start.
+export function pickPrimaryRole(roles) {
+  const candidates = [...roles].filter(Boolean);
+  if (candidates.length === 0) return null;
+  return candidates.sort(
+    (a, b) =>
+      (Number(Boolean(b.ongoing)) - Number(Boolean(a.ongoing))) ||
+      (seniorityRank(b.position) - seniorityRank(a.position)) ||
+      ((b.end - b.start) - (a.end - a.start)) ||
+      (b.end - a.end) ||
+      (b.start - a.start)
+  )[0];
+}
+
 function unionFind(size) {
   const parent = Array.from({ length: size }, (_, i) => i);
   const find = (x) => {
@@ -263,6 +319,51 @@ function unionFind(size) {
     return x;
   };
   return { find, union: (a, b) => { parent[find(a)] = find(b); } };
+}
+
+// Group dated roles into employer tenures: roles at the same company (case/typo-
+// insensitive, see isSameEmployer) collapse into one tenure; roles with a blank
+// company each stand alone. Each tenure carries its member `roles` (sorted
+// chronologically), the source `roleIndexes` into the passed array, a stable
+// `key`, and `isPromotionLadder` (≥2 roles that start at different times — i.e. a
+// progression, not two concurrent titles). Shared by the chart and the resume
+// selector so both see the same employer structure.
+export function groupRolesByEmployer(intervals) {
+  const dated = [...intervals].filter((iv) => iv.dated);
+  const uf = unionFind(dated.length);
+  for (let i = 0; i < dated.length; i += 1) {
+    for (let j = i + 1; j < dated.length; j += 1) {
+      if (isSameEmployer(dated[i].company, dated[j].company)) uf.union(i, j);
+    }
+  }
+  const employers = new Map();
+  dated.forEach((iv, i) => {
+    const key = uf.find(i);
+    if (!employers.has(key)) {
+      employers.set(key, {
+        key,
+        company: iv.company || "",
+        start: iv.start,
+        end: iv.end,
+        ongoing: Boolean(iv.ongoing),
+        roleIndexes: [],
+        roles: [],
+      });
+    }
+    const emp = employers.get(key);
+    emp.start = Math.min(emp.start, iv.start);
+    emp.end = Math.max(emp.end, iv.end);
+    emp.ongoing = emp.ongoing || Boolean(iv.ongoing);
+    if (!emp.company && iv.company) emp.company = iv.company;
+    emp.roleIndexes.push(i);
+    emp.roles.push(iv);
+  });
+  const list = [...employers.values()];
+  for (const emp of list) {
+    emp.roles.sort((a, b) => a.start - b.start || a.end - b.end);
+    emp.isPromotionLadder = emp.roles.length >= 2 && new Set(emp.roles.map((r) => r.start)).size >= 2;
+  }
+  return list;
 }
 
 // Lay dated roles into lanes. Roles at the same employer share ONE lane — a
@@ -276,24 +377,9 @@ export function assignLaneGroups(intervals) {
   const dated = [...intervals].filter((iv) => iv.dated);
   if (dated.length === 0) return { placed: [], maxGroupLanes: 1 };
 
-  // 1. Group roles into employers (same company name, case/prefix-insensitive).
-  //    Roles with a blank company each stand alone.
-  const roleUF = unionFind(dated.length);
-  for (let i = 0; i < dated.length; i += 1) {
-    for (let j = i + 1; j < dated.length; j += 1) {
-      if (isSameEmployer(dated[i].company, dated[j].company)) roleUF.union(i, j);
-    }
-  }
-  const employers = new Map();
-  dated.forEach((iv, i) => {
-    const key = roleUF.find(i);
-    if (!employers.has(key)) employers.set(key, { key, start: iv.start, end: iv.end, roleIndexes: [] });
-    const emp = employers.get(key);
-    emp.start = Math.min(emp.start, iv.start);
-    emp.end = Math.max(emp.end, iv.end);
-    emp.roleIndexes.push(i);
-  });
-  const empList = [...employers.values()];
+  // 1. Group roles into employers via the shared helper (same company shares one
+  //    lane; blank-company roles stand alone).
+  const empList = groupRolesByEmployer(dated);
 
   // 2. Cluster employers whose tenures overlap, so a standalone employer stays
   //    full-height and only concurrent employers share (and split) a stack.
@@ -354,6 +440,73 @@ export function assignLaneGroups(intervals) {
     .sort((a, b) => a.start - b.start || a.end - b.end);
 
   return { placed, maxGroupLanes };
+}
+
+// Recency-weighted fraction of career months that were employed (0..1). Recent
+// unemployment drags this down hard; a gap a decade ago barely moves it — the
+// same time-decay the chart uses, applied as a single continuity metric.
+function computeRecentContinuityScore(timeline) {
+  const { dated, domainStart, nowIdx } = timeline;
+  if (domainStart == null || dated.length === 0) return 1;
+  const merged = mergeIntervals(dated);
+  const isCovered = (m) => merged.some((span) => m >= span.start && m <= span.end);
+  let num = 0;
+  let den = 0;
+  for (let m = domainStart; m <= nowIdx; m += 1) {
+    const w = recencyWeight(nowIdx - m);
+    den += w;
+    if (isCovered(m)) num += w;
+  }
+  return den > 0 ? num / den : 1;
+}
+
+// Shared employment-structure model consumed by BOTH the chart and the resume
+// generator. Composes the timeline, employer grouping, concurrent-employment
+// clusters (each with a deterministic primary role to lead with), the present-
+// anchored required-role chain, and a single recency-weighted continuity score.
+export function analyzeEmployment(workHistory, now = new Date()) {
+  const timeline = buildTimeline(workHistory, now);
+  const employers = groupRolesByEmployer(timeline.dated);
+
+  // Overlap clusters at the EMPLOYER level: two genuinely different employers
+  // whose tenures share time are concurrent employment. A promotion ladder at one
+  // employer is a single tenure, so it never counts as an overlap with itself.
+  const empUF = unionFind(employers.length);
+  for (let i = 0; i < employers.length; i += 1) {
+    for (let j = i + 1; j < employers.length; j += 1) {
+      if (spansOverlap(employers[i], employers[j])) empUF.union(i, j);
+    }
+  }
+  const clusterMap = new Map();
+  employers.forEach((emp, i) => {
+    const key = empUF.find(i);
+    if (!clusterMap.has(key)) clusterMap.set(key, []);
+    clusterMap.get(key).push(emp);
+  });
+  const overlapClusters = [...clusterMap.values()]
+    .filter((members) => members.length >= 2)
+    .map((members) => {
+      const roles = members.flatMap((emp) => emp.roles);
+      const primary = pickPrimaryRole(roles);
+      return {
+        companies: members.map((emp) => emp.company).filter(Boolean),
+        start: Math.min(...members.map((emp) => emp.start)),
+        end: Math.max(...members.map((emp) => emp.end)),
+        roleIds: roles.map((r) => r.id),
+        primaryRoleId: primary ? primary.id : null,
+      };
+    });
+
+  const selection = selectRolesForContinuousCoverage(workHistory, { now });
+
+  return {
+    timeline,
+    employers,
+    overlapClusters,
+    recentChain: selection.requiredIds,
+    recentContinuityScore: computeRecentContinuityScore(timeline),
+    selection,
+  };
 }
 
 // Deterministically choose which roles a generated resume MUST include so it
@@ -444,14 +597,26 @@ export function selectRolesForContinuousCoverage(workHistory, options = {}) {
   };
 }
 
-// A plain-language summary of employment continuity for prompts and UI.
+// A plain-language summary of employment continuity for prompts and UI. Built on
+// the shared analyzeEmployment model so callers get the employer grouping,
+// concurrent-role primaries, per-role recency weights, and continuity score
+// alongside the required-role list.
 export function summarizeCoverage(workHistory, now = new Date()) {
-  const timeline = buildTimeline(workHistory, now);
-  const selection = selectRolesForContinuousCoverage(workHistory, { now });
+  const analysis = analyzeEmployment(workHistory, now);
+  const { timeline, selection, employers, overlapClusters, recentContinuityScore } = analysis;
+  const nowIdx = timeline.nowIdx;
   const byId = new Map((workHistory ?? []).map((item) => [item.id, item]));
 
+  // 0..1 recency weight per role, by how long ago its tenure ended. Feeds the
+  // prompt so the LLM can weight bullets/placement toward recent experience.
+  const roleEndById = new Map(timeline.dated.map((iv) => [iv.id, iv.end]));
+  const recencyOf = (id) => {
+    const end = roleEndById.get(id);
+    return end == null ? 0 : recencyWeight(nowIdx - end);
+  };
+
   const requiredRoles = selection.requiredIds
-    .map((id) => ({ item: byId.get(id), reason: selection.reasons[id] }))
+    .map((id) => ({ item: byId.get(id), reason: selection.reasons[id], recency: recencyOf(id) }))
     .filter((entry) => entry.item);
 
   const currentlyEmployed = timeline.dated.some((iv) => iv.ongoing);
@@ -461,13 +626,35 @@ export function summarizeCoverage(workHistory, now = new Date()) {
     null
   );
 
+  // roleId -> employer key, so callers can group required roles into one company
+  // block (a promotion ladder) without re-deriving employer membership.
+  const employerKeyByRoleId = new Map();
+  for (const emp of employers) {
+    for (const role of emp.roles) employerKeyByRoleId.set(role.id, emp.key);
+  }
+  const primaryRoleIds = new Set(overlapClusters.map((c) => c.primaryRoleId).filter(Boolean));
+
+  // Attach each role's stored source item so prompt builders can render a full
+  // employer tenure (including non-required rungs of a promotion ladder).
+  const employersWithItems = employers.map((emp) => ({
+    ...emp,
+    roles: emp.roles.map((role) => ({ ...role, item: byId.get(role.id) })),
+  }));
+
   return {
     timeline,
     selection,
+    analysis,
+    employers: employersWithItems,
+    overlapClusters,
+    employerKeyByRoleId,
+    primaryRoleIds,
     requiredRoles,
     currentlyEmployed,
     totalGapMonths,
     largestGap,
+    recentContinuityScore,
+    recencyOf,
     undatedCount: timeline.undated.length,
   };
 }

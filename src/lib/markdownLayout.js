@@ -1,5 +1,17 @@
 import { prepareWithSegments, layout, layoutWithLines } from "@chenglou/pretext";
-import { FONT, LH_DEFAULT, LH_MIN, LH_MAX } from "./constants";
+import { FONT, LH_DEFAULT, LH_MIN, LH_MAX, FS_MAX_DEFAULT } from "./constants";
+
+/* ── Separator gap ─────────────────────────────────────────────
+ * The padding above/below an `hr` is calibrated at the reference
+ * font size. When auto-fit shrinks the font to pack in more text,
+ * scale the gap down with it so the divider band stays proportional
+ * instead of ballooning relative to the now-tiny text. Never grows
+ * past the configured value.
+ */
+function separatorGap(separatorSpacing, baseFontSize) {
+  const scale = Math.min(1, baseFontSize / FS_MAX_DEFAULT);
+  return separatorSpacing * scale;
+}
 
 /* ── Parse markdown into blocks ────────────────────────────── */
 export function parseMarkdown(md) {
@@ -82,7 +94,8 @@ export function measureBlocks(blocks, baseFontSize, contentW, lhMult = LH_DEFAUL
       h += isSection ? sectionSpacing : isItem ? itemSpacing : block.mt;
     }
     if (block.type === "hr") {
-      h += separatorSpacing + 1 + separatorSpacing;
+      const gap = separatorGap(separatorSpacing, baseFontSize);
+      h += gap + 1 + gap;
       continue;
     }
     const fs = baseFontSize * block.fontScale;
@@ -110,9 +123,10 @@ export function layoutBlocks(blocks, baseFontSize, contentW, pad, lhMult = LH_DE
       y += isSection ? sectionSpacing : isItem ? itemSpacing : block.mt;
     }
     if (block.type === "hr") {
-      y += separatorSpacing;
+      const gap = separatorGap(separatorSpacing, baseFontSize);
+      y += gap;
       positioned.push({ type: "hr", y });
-      y += 1 + separatorSpacing;
+      y += 1 + gap;
       continue;
     }
 

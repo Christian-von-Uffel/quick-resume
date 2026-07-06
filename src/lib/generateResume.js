@@ -48,14 +48,85 @@ function bulletsFromDescription(description) {
 }
 
 // Prompt block listing the roles the resume MUST include for a continuous,
-// currently-employed timeline. Empty string when there's nothing to require.
+// currently-employed timeline. Roles are grouped by employer so a promotion
+// ladder reads as one growing tenure, annotated with recency (emphasis) and
+// which role leads a concurrent pair. Empty string when there's nothing to
+// require.
 export function describeMandatoryRoles(coverage) {
   if (!coverage?.requiredRoles?.length) return "";
 
-  const lines = coverage.requiredRoles.map(({ item, reason }) => {
-    const label = REASON_LABELS[reason] ?? "keeps the timeline continuous";
-    return `- ${roleIdentity(item)} (${label})`;
+  // roleId -> interval (position/company/dates) from the shared employer model.
+  const roleById = new Map();
+  for (const emp of coverage.employers ?? []) {
+    for (const role of emp.roles) roleById.set(role.id, role);
+  }
+  const employerByKey = new Map((coverage.employers ?? []).map((emp) => [emp.key, emp]));
+  const keyOf = (id) => coverage.employerKeyByRoleId?.get(id);
+
+  const recencyTag = (recency) =>
+    recency >= 0.6 ? "recent — emphasize" : recency < 0.2 ? "older — keep brief" : "";
+
+  const requiredById = new Map(coverage.requiredRoles.map((entry) => [entry.item.id, entry]));
+
+  // A line for one role. Required roles carry their continuity reason; a
+  // non-required rung of a promotion ladder is optional but shown for context.
+  const roleLine = (item, { recency, reason }) => {
+    const tags = [];
+    if (reason) tags.push(REASON_LABELS[reason] ?? "keeps the timeline continuous");
+    else tags.push("same employer — include only if it adds relevant evidence");
+    const rt = recencyTag(recency ?? 0);
+    if (rt) tags.push(rt);
+    if (coverage.primaryRoleIds?.has(item.id)) tags.push("primary of a concurrent pair — lead with this");
+    return `  - ${roleIdentity(item)} (${tags.join("; ")})`;
+  };
+
+  // Group required roles by employer; order employers by their most recent role.
+  const groups = new Map();
+  for (const entry of coverage.requiredRoles) {
+    const key = keyOf(entry.item.id) ?? `solo:${entry.item.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  const orderedGroups = [...groups.entries()]
+    .map(([key, entries]) => ({
+      employer: employerByKey.get(key),
+      entries,
+      maxRecency: Math.max(...entries.map((e) => e.recency ?? 0)),
+    }))
+    .sort((a, b) => b.maxRecency - a.maxRecency);
+
+  const blocks = orderedGroups.map(({ employer, entries }) => {
+    // A promotion-ladder employer is rendered as its full tenure (all rungs,
+    // most-recent title first) so the growth story survives even when only the
+    // current rung is strictly required for continuity.
+    if (employer?.isPromotionLadder) {
+      const rungs = [...employer.roles]
+        .filter((role) => role.item)
+        .sort((a, b) => b.start - a.start || b.end - a.end)
+        .map((role) =>
+          roleLine(role.item, {
+            recency: coverage.recencyOf ? coverage.recencyOf(role.id) : 0,
+            reason: requiredById.get(role.id)?.reason,
+          })
+        )
+        .join("\n");
+      return `${employer.company || "This employer"} — one continuous tenure; present as a SINGLE company entry showing the promotion history, most recent title first:\n${rungs}`;
+    }
+    return entries
+      .sort((a, b) => (b.recency ?? 0) - (a.recency ?? 0))
+      .map((entry) => roleLine(entry.item, entry))
+      .join("\n");
   });
+
+  // Concurrent-employment guidance from the overlap clusters.
+  const concurrent = (coverage.overlapClusters ?? [])
+    .map((cluster) => {
+      const primary = roleById.get(cluster.primaryRoleId);
+      if (!primary) return null;
+      const who = [primary.position, primary.company].filter(Boolean).join(" — ") || "the primary role";
+      return `  - Overlapping dates (${cluster.companies.join(" & ")}): lead with "${who}"; don't let a concurrent secondary role crowd it out.`;
+    })
+    .filter(Boolean);
 
   const notes = [];
   if (coverage.currentlyEmployed === false) {
@@ -70,10 +141,11 @@ export function describeMandatoryRoles(coverage) {
 
   return `
 <mandatory_roles>
-These roles MUST appear in selectedWorkHistory regardless of how closely they match the target job. They anchor a continuous, current employment record and cover gaps a hiring manager would otherwise question:
-${lines.join("\n")}
-${notes.length ? `\nContinuity notes:\n${notes.map((note) => `- ${note}`).join("\n")}` : ""}
-You still decide which bullets to surface for each role and the overall ordering to best convey fit. Any other older roles should be included only when they add relevant evidence for the target job.
+These roles MUST appear in selectedWorkHistory regardless of how closely they match the target job. They anchor a continuous, current employment record and cover gaps a hiring manager would otherwise question. List experience most-recent-first:
+
+${blocks.join("\n\n")}
+${concurrent.length ? `\nConcurrent employment:\n${concurrent.join("\n")}` : ""}${notes.length ? `\nContinuity notes:\n${notes.map((note) => `- ${note}`).join("\n")}` : ""}
+You still decide which bullets to surface for each role and how much space each gets — allocate emphasis by recency and fit. Any other older roles should be included only when they add relevant evidence for the target job.
 </mandatory_roles>
 `;
 }
@@ -100,6 +172,9 @@ export function ensureRequiredRolesSelected(selectedEvidence, coverage, workHist
       startYear: source.startYear ?? "",
       endMonth: source.endMonth ?? "",
       endYear: source.endYear ?? "",
+      // The model dropped this despite it being required, so it's a weak match —
+      // keep it for continuity but flag it to be rendered compactly.
+      fit: "timeline-only",
       fitReason: "Included to keep the employment timeline continuous.",
       selectedBullets: bulletsFromDescription(source.description),
     });
@@ -172,11 +247,21 @@ Exclude experience that is impressive but does not help a hiring manager quickly
 Do not invent facts, employers, dates, tools, metrics, schools, or responsibilities.
 Do not copy phrases from the job description unless they already appear in the work history.
 Keep the selection plain, credible, and specific.
+List experience most-recent-first. When several selected roles share one employer, treat them as a single company block showing progression (a promotion history), most recent title first. When roles overlap in time, lead with the primary named in mandatory_roles and keep any concurrent secondary role lighter.
 </selection_policy>
+
+<reconciliation>
+Tag every selected role with a "fit" tier and let it drive how much space the role gets, so timeline continuity never crowds out suitability:
+- "strong": directly matches the target role — lead with these and give them the most bullets.
+- "supporting": relevant but secondary — include with a few bullets.
+- "timeline-only": required only to keep employment continuous (see mandatory_roles) and a weak match for this job — keep it (never drop it), but minimize it to its title and dates plus at most one concise line; do not pad it with bullets that dilute the resume's focus.
+Among roles of equal fit, prefer the more recent one for emphasis and ordering. A mandatory role that genuinely fits the target job should be tagged "strong" or "supporting", not "timeline-only".
+</reconciliation>
 
 <instructions>
 Return only valid JSON. Do not wrap it in markdown.
 Copy selected role metadata exactly from the provided work history.
+Tag each selected role with its fit tier: "strong", "supporting", or "timeline-only".
 Rewrite selected bullets only when needed for clarity, while preserving the facts from the source material.
 Use excludedItems to explain what you intentionally left out and why.
 </instructions>
@@ -192,6 +277,7 @@ Use excludedItems to explain what you intentionally left out and why.
       "startYear": "",
       "endMonth": "",
       "endYear": "",
+      "fit": "strong | supporting | timeline-only",
       "fitReason": "",
       "selectedBullets": [
         "Specific source-grounded bullet that supports the target role."
@@ -212,14 +298,31 @@ Use excludedItems to explain what you intentionally left out and why.
 </schema>`;
 }
 
+const FIT_TIERS = new Set(["strong", "supporting", "timeline-only"]);
+
+// Coerce a model-supplied fit tag to a known tier, defaulting to "supporting"
+// when absent or unrecognized.
+export function normalizeFitTier(value) {
+  const tier = String(value ?? "").trim().toLowerCase();
+  return FIT_TIERS.has(tier) ? tier : "supporting";
+}
+
 export function validateSelectedResumeEvidence(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The model did not return valid fit selection JSON.");
   }
 
+  const selectedWorkHistory = Array.isArray(value.selectedWorkHistory)
+    ? value.selectedWorkHistory.map((role) =>
+        role && typeof role === "object" && !Array.isArray(role)
+          ? { ...role, fit: normalizeFitTier(role.fit) }
+          : role
+      )
+    : [];
+
   return {
     fitSummary: typeof value.fitSummary === "string" ? value.fitSummary.trim() : "",
-    selectedWorkHistory: Array.isArray(value.selectedWorkHistory) ? value.selectedWorkHistory : [],
+    selectedWorkHistory,
     selectedSkills: Array.isArray(value.selectedSkills) ? value.selectedSkills : [],
     excludedItems: Array.isArray(value.excludedItems) ? value.excludedItems : [],
   };
@@ -246,6 +349,12 @@ ${getVisibleContactLine(profile)}
 
 ### Role — Company
 Start — End
+- Achievement bullet
+
+### Company
+**Most recent title** · Start — End
+- Achievement bullet
+**Earlier title** · Start — End
 - Achievement bullet
 
 ## EDUCATION
@@ -276,6 +385,12 @@ Use only the selected resume evidence and profile. Do not include excluded work 
 Write to show straightforward fit for the target role, not generic impressiveness.
 Prefer measurable, plain-language bullets. Do not invent employers, dates, schools, tools, metrics, or responsibilities not present in the provided data.
 Work history dates are stored as numeric months ("01"-"12") and years ("2020", or "present"). Format them for the resume as readable ranges like "March 2020 — Present".${continuityInstruction}
+
+Experience section:
+- List roles most-recent-first.
+- When multiple selected roles share one employer, render them as a SINGLE company block: one "### Company" heading followed by each title with its own dates (most recent first), as shown in the format. This presents internal promotions as one continuous, growing tenure rather than separate jobs.
+- When two roles overlap in time, lead with the one already tagged the stronger fit (or the primary); do not give equal space to a concurrent secondary role.
+- Allocate bullets by recency and the role's "fit" tier: "strong" recent roles get the most bullets; "supporting" roles get a few; a "timeline-only" role gets its title and dates and at most one concise line — never pad it. This keeps the resume suitable for the target job while the timeline stays continuous.
 
 Professional title (the line directly under the name):
 - Mirror the target role in the job description so a recruiter or ATS instantly sees a match. When the candidate's background genuinely supports it, use the exact role title from the job description.

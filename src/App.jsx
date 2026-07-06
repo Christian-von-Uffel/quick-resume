@@ -63,6 +63,7 @@ import {
 } from "./lib/generateResume";
 import { summarizeCoverage } from "./lib/workHistoryTimeline";
 import { WorkHistoryTimeline } from "./components/WorkHistoryTimeline";
+import { ExperienceReview } from "./components/ExperienceReview";
 import { importResume, coerceImportedProfile } from "./lib/importResume";
 import {
   findMissingExperience,
@@ -70,6 +71,13 @@ import {
   formatExperienceElaboration,
   cleanFormattedDetail,
 } from "./lib/reviewExperience";
+import {
+  buildClarityReviewPrompt,
+  validateClarityReview,
+  buildClaritySuggestionPrompt,
+  cleanSuggestedSentence,
+  replaceSentence,
+} from "./lib/clarifyExperience";
 import { buildProfileExportPayload } from "./lib/exportProfile";
 import { parseProfileExportFile } from "./lib/importProfile";
 import { printResumePage } from "./lib/exportPdf";
@@ -108,6 +116,10 @@ export default function App() {
   const [workHistorySaveToast, setWorkHistorySaveToast] = useState("");
   const [workHistorySearch, setWorkHistorySearch] = useState("");
   const [highlightedWorkId, setHighlightedWorkId] = useState(null);
+  // Which position's inline clarity review is open (null = none).
+  const [reviewingWorkId, setReviewingWorkId] = useState(null);
+  // Which position is pending a delete confirmation (null = no modal open).
+  const [deleteConfirmWorkId, setDeleteConfirmWorkId] = useState(null);
   const [profileDataToast, setProfileDataToast] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [generateStatus, setGenerateStatus] = useState("");
@@ -655,7 +667,70 @@ export default function App() {
 
   const handleDeleteWorkHistory = (workId) => {
     setWorkHistory((current) => current.filter((item) => item.id !== workId));
+    setReviewingWorkId((current) => (current === workId ? null : current));
+    setDeleteConfirmWorkId((current) => (current === workId ? null : current));
   };
+
+  const handleConfirmDeleteWorkHistory = () => {
+    if (deleteConfirmWorkId) handleDeleteWorkHistory(deleteConfirmWorkId);
+    setDeleteConfirmWorkId(null);
+  };
+
+  const handleToggleExperienceReview = (workId) => {
+    setReviewingWorkId((current) => (current === workId ? null : workId));
+  };
+
+  // Ask the model which sentences in a position's description are hard to read.
+  const handleReviewSentences = useCallback(
+    async ({ position, description }) => {
+      const parsed = await callLlmForJson(
+        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        buildClarityReviewPrompt({ position, description }),
+        null
+      );
+      return validateClarityReview(parsed);
+    },
+    [llmSettings, apiKeyDrafts]
+  );
+
+  // Turn a flagged sentence plus the person's clarification (and any confirmed
+  // skills, tools, or collaborators) into a clearer rewrite.
+  const handleProposeSentenceRewrite = useCallback(
+    async ({ position, sentence, clarification, skills }) => {
+      const text = await callLlm(
+        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        buildClaritySuggestionPrompt({ position, sentence, clarification, skills }),
+        null
+      );
+      return cleanSuggestedSentence(text);
+    },
+    [llmSettings, apiKeyDrafts]
+  );
+
+  // Swap an accepted rewrite into the stored description and confirm with a toast.
+  const handleReplaceSentenceInWork = useCallback((workId, original, replacement) => {
+    let didReplace = false;
+    setWorkHistory((current) =>
+      sortWorkHistory(
+        current.map((item) => {
+          if (item.id !== workId) return item;
+          const { description, replaced } = replaceSentence(item.description, original, replacement);
+          if (!replaced) return item;
+          didReplace = true;
+          return normalizeWorkHistoryItem({ ...item, description });
+        })
+      )
+    );
+
+    setWorkHistorySaveToast(didReplace ? "Sentence updated." : "Could not find that sentence to replace.");
+    if (workHistorySaveToastTimeoutRef.current) {
+      clearTimeout(workHistorySaveToastTimeoutRef.current);
+    }
+    workHistorySaveToastTimeoutRef.current = setTimeout(() => {
+      setWorkHistorySaveToast("");
+      workHistorySaveToastTimeoutRef.current = null;
+    }, 3000);
+  }, []);
 
   const handleAddEducation = () => {
     setProfile((current) => ({
@@ -1249,7 +1324,7 @@ export default function App() {
             onChange={handleMarkdownChange}
             spellCheck={false}
             className="flex-1 bg-transparent text-neutral-300 text-sm font-mono leading-relaxed p-4 resize-none outline-none ring-0 focus:outline-none focus:ring-0 border-none placeholder-neutral-600 pagefit-scrollbar"
-            style={{ caretColor: "#fff" }}
+            style={{ caretColor: "currentColor" }}
           />
         </div>
 
@@ -1401,10 +1476,30 @@ export default function App() {
                       : "border-neutral-800"
                   }`}
                 >
-                  <div className="flex justify-end mb-3">
+                  <div className="flex items-center justify-between gap-2 mb-3">
                     <button
                       type="button"
-                      onClick={() => handleDeleteWorkHistory(item.id)}
+                      onClick={() => handleToggleExperienceReview(item.id)}
+                      disabled={!item.description.trim()}
+                      title={
+                        item.description.trim()
+                          ? "Ask the model to flag hard-to-read sentences"
+                          : "Add a description first to review it."
+                      }
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        reviewingWorkId === item.id
+                          ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
+                          : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
+                      }`}
+                    >
+                      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+                      </svg>
+                      {reviewingWorkId === item.id ? "Reviewing for clarity" : "Review for clarity"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirmWorkId(item.id)}
                       className="rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-red-300"
                     >
                       Delete
@@ -1516,6 +1611,20 @@ export default function App() {
                         className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
                       />
                     </label>
+
+                    {reviewingWorkId === item.id && (
+                      <ExperienceReview
+                        key={item.id}
+                        position={item.position}
+                        description={item.description}
+                        reviewSentences={handleReviewSentences}
+                        proposeRewrite={handleProposeSentenceRewrite}
+                        onAcceptSentence={(original, replacement) =>
+                          handleReplaceSentenceInWork(item.id, original, replacement)
+                        }
+                        onClose={() => setReviewingWorkId(null)}
+                      />
+                    )}
                   </div>
                 </div>
               ))
@@ -2592,6 +2701,52 @@ export default function App() {
           {apiKeySaveToast || workHistorySaveToast || profileDataToast}
         </div>
       )}
+
+      {deleteConfirmWorkId !== null && (() => {
+        const pendingDeletion = workHistory.find((item) => item.id === deleteConfirmWorkId);
+        const roleLabel = [pendingDeletion?.position, pendingDeletion?.company]
+          .filter(Boolean)
+          .join(" at ");
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            onClick={() => setDeleteConfirmWorkId(null)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl shadow-black/50"
+            >
+              <h2 className="text-lg font-semibold text-neutral-50">
+                Delete this position?
+              </h2>
+              <p className="mt-1 text-sm text-neutral-400">
+                {roleLabel
+                  ? `“${roleLabel}” will be removed from your work history. This can’t be undone.`
+                  : "This position will be removed from your work history. This can’t be undone."}
+              </p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  autoFocus
+                  onClick={() => setDeleteConfirmWorkId(null)}
+                  className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+                >
+                  No, keep it
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteWorkHistory}
+                  className="rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/25 dark:text-red-300"
+                >
+                  Yes, delete
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {isCreateResumeOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
