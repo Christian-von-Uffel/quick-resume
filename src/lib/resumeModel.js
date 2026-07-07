@@ -291,6 +291,63 @@ export function normalizeStoredList(value, fallback) {
   return Array.isArray(value) ? value : fallback;
 }
 
+/* ── Description details ───────────────────────────────────── */
+// People write work-history descriptions either as one detail per line (with or
+// without bullet markers) or as flowing sentences in a paragraph. Everything
+// that needs "the individual details" goes through these helpers so neither
+// format is an artificial constraint the person has to know about.
+
+const DETAIL_MARKER = /^\s*[-•*]\s*/;
+
+// A sentence ends at ./!/? followed by whitespace and something that starts a
+// new sentence. Decimals ("3.5 stars") never match because they have no
+// whitespace after the period.
+const SENTENCE_BOUNDARY = /(?<=[.!?])\s+(?=["'“”‘’(]?[A-Z0-9])/;
+
+// Fragments ending in these are abbreviations or initials, not sentence ends —
+// glue the next fragment back on (e.g. "e.g.", "Inc.", "U.S.", "Dr.").
+const NON_TERMINAL_ENDING =
+  /(?:\b(?:e\.g|i\.e|etc|vs|ca|no|dept|est|approx|inc|corp|ltd|co|dr|mr|ms|mrs|jr|sr|st)|\b[A-Za-z])\.$/i;
+
+export function splitLineIntoSentences(line) {
+  const text = String(line ?? "").trim();
+  if (!text) return [];
+
+  const merged = [];
+  for (const part of text.split(SENTENCE_BOUNDARY)) {
+    const fragment = part.trim();
+    if (!fragment) continue;
+    const previous = merged[merged.length - 1];
+    if (previous && NON_TERMINAL_ENDING.test(previous)) {
+      merged[merged.length - 1] = `${previous} ${fragment}`;
+    } else {
+      merged.push(fragment);
+    }
+  }
+  return merged;
+}
+
+// The individual details of a description: bullet lines, plain lines, and the
+// separate sentences inside any line that holds several.
+export function splitDescriptionIntoDetails(description) {
+  return String(description ?? "")
+    .split("\n")
+    .map((line) => line.replace(DETAIL_MARKER, "").trim())
+    .filter(Boolean)
+    .flatMap(splitLineIntoSentences);
+}
+
+// Canonical form for "is this the same detail?" checks: markers, whitespace
+// runs, case, and trailing punctuation don't count as differences.
+export function normalizeDetailForComparison(value) {
+  return String(value ?? "")
+    .replace(DETAIL_MARKER, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?]+$/, "")
+    .toLowerCase();
+}
+
 export function normalizeProfile(value) {
   return {
     ...DEFAULT_PROFILE,

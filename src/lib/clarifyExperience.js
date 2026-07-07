@@ -162,9 +162,11 @@ export function cleanSuggestedSentence(text) {
   return cleanFormattedDetail(text);
 }
 
-// Swap a flagged sentence for its accepted rewrite inside a multi-line, bullet-style
-// description. Tries an exact substring first, then falls back to matching a whole
-// line while ignoring bullet markers and whitespace, preserving that line's prefix.
+// Swap a flagged sentence for its accepted rewrite inside a description of any
+// shape — bullet lines or flowing paragraph sentences. Tries an exact substring
+// first, then the same match tolerating whitespace differences (wrapped lines,
+// double spaces), then falls back to matching a whole line while ignoring
+// bullet markers and whitespace, preserving that line's prefix.
 export function replaceSentence(description, original, replacement) {
   const text = String(description ?? "");
   const target = String(original ?? "").trim();
@@ -172,8 +174,20 @@ export function replaceSentence(description, original, replacement) {
 
   if (!target || !nextSentence) return { description: text, replaced: false };
 
+  // Function replacements keep "$&"/"$$" in a rewrite literal instead of being
+  // treated as replacement patterns (e.g. a sentence mentioning dollar amounts).
   if (text.includes(target)) {
-    return { description: text.replace(target, nextSentence), replaced: true };
+    return { description: text.replace(target, () => nextSentence), replaced: true };
+  }
+
+  // Whitespace-tolerant exact match: the flagged sentence may sit inside a
+  // paragraph whose spacing or line wrapping no longer matches character for
+  // character.
+  const flexibleTarget = new RegExp(
+    target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")
+  );
+  if (flexibleTarget.test(text)) {
+    return { description: text.replace(flexibleTarget, () => nextSentence), replaced: true };
   }
 
   const normalize = (line) =>

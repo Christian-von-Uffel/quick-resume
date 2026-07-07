@@ -1,11 +1,63 @@
 import { normalizeStoredList } from "./resumeModel";
 
-export function findMissingExperience({ workHistory, jobDescription }) {
+// The "address missing experience" flow on the Generate Resume tab. Unlike the
+// clarity review (fix what's written) or the enrichment flow (expand one thin
+// role from its title alone), this flow reads ONE specific job description and
+// finds what it asks for that the stored work history doesn't show yet:
+//   Call 1  buildMissingExperienceReviewPrompt -> gap questions, each connected
+//           to the existing role(s) that plausibly involved it
+//   Call 2  formatExperienceElaboration        -> the person's answer, rewritten
+//           as one plainspoken work-history detail
+// Every question is a candidate to confirm, never an asserted fact.
+
+// The kinds of things a posting asks for. The prompt requires sweeping ALL of
+// them so questions cover the posting's breadth — responsibilities, leadership,
+// stakeholders, ways of working — instead of collapsing into a tool checklist.
+export const MISSING_EXPERIENCE_KINDS = [
+  "responsibility",
+  "leadership",
+  "collaboration",
+  "communication",
+  "method",
+  "tool",
+  "domain",
+  "approach",
+];
+
+export const MISSING_EXPERIENCE_KIND_LABELS = {
+  responsibility: "Core responsibility",
+  leadership: "Leadership",
+  collaboration: "Collaboration",
+  communication: "Communication",
+  method: "Method",
+  tool: "Tool",
+  domain: "Domain",
+  approach: "Way of working",
+};
+
+const MISSING_EXPERIENCE_KIND_SET = new Set(MISSING_EXPERIENCE_KINDS);
+
+export const MAX_MISSING_EXPERIENCE_ITEMS = 12;
+
+export function buildMissingExperienceReviewPrompt({ workHistory, jobDescription }) {
   return `<task>
-1. Analyze the job description below to compile a list of necessary skills, experiences, and responsibilities.
-2. Cross-reference this list against the candidate's work history to identify gaps (things requested in the job description but not clearly demonstrated or mentioned in the work history).
-3. Generate simple, direct, conversational questions to ask the candidate about those gaps so they can fill in their work history.
+You are helping a candidate address experience this specific job posting asks for that their stored work history does not clearly show yet.
+1. Read the ENTIRE job description — summary, responsibilities, qualifications, technical lists — and collect what it asks for across every kind below, not just tools.
+2. Cross-reference against the candidate's work history. Skip anything the history already demonstrates.
+3. For each remaining gap, check whether one of the candidate's existing roles PLAUSIBLY involved it even though the description never says so — infer from the role's title, company, dates, and existing details. When it does, name those roles in likelyRoles and phrase the question so it connects that role to the gap.
+4. Only when no existing role plausibly implies the gap, ask a plain direct question about it.
 </task>
+
+<kinds_of_experience>
+- "responsibility": day-to-day work the posting expects (e.g. building predictive models, designing data workflows).
+- "leadership": leading initiatives, mentoring, coaching, providing direction to others.
+- "collaboration": partnering with or influencing specific stakeholders (executives, legal, engineering, HR).
+- "communication": presenting, writing, or explaining complex work to non-technical audiences.
+- "method": techniques or disciplines (e.g. statistics, experimentation, data engineering, automation).
+- "tool": named software, languages, or platforms (e.g. SQL, Streamlit, vector databases).
+- "domain": industry or operating context (e.g. people analytics, regulated environments).
+- "approach": ways of working the posting emphasizes (e.g. handling ambiguity, rapid prototyping, judgment about what to build).
+</kinds_of_experience>
 
 <work_history>
 ${JSON.stringify(workHistory, null, 2)}
@@ -16,102 +68,131 @@ ${jobDescription}
 </job_description>
 
 <instructions>
-- Identify concrete skills, tools, technologies, methodologies, or hands-on responsibilities in the job description that are missing from the candidate's work history.
-- For each gap, generate a simple, direct, conversational question.
-- Every question MUST start with the exact phrase "Do you have experience" (e.g. "Do you have experience conducting customer discovery interviews?").
-- Write questions in natural, active, plainspoken language—exactly how a recruiter or hiring manager would ask a candidate during an interview. Avoid robotic, academic, corporate, or policy-heavy jargon.
-- Each question must be extremely simple and focus on exactly ONE discrete topic or skill that can be answered with a clear "yes" or "no". Never ask multi-part questions.
-- Keep "plainspokenDetail" simple, factual, and reusable as a bullet point in a work history description (e.g., "Conducted customer discovery interviews to identify user needs.").
-- Write "answerPlaceholder" as a short, first-person example answer that starts with "Yes, I" and hints at the kind of specifics we want (what they did and, when natural, what came of it). Keep it realistic and plainspoken, not fancy. For "Do you have experience designing product literature?" a good placeholder is "Yes, I designed product brochures and one-pagers our sales team handed out at trade shows."
-
-CRITICAL VALIDATION RULES - Violating these will cause the question to be rejected:
-1. Do NOT use the word "and" or "or" anywhere in the question (split combined requirements into separate questions).
-2. Do NOT use the symbols "/" or "&" anywhere in the question.
-3. Do NOT use any of the following banned broad or category words anywhere in the question:
-   - "all", "any", "various", "multiple", "overall", "general"
-   - "function", "functions", "duties", "tasks", "responsibilities"
-   - "frontend", "front-end"
-   - "including", "such as", "like", "etc"
-Instead of asking broad questions, ask about a single, specific activity (e.g., instead of "Do you have experience with agile tasks?", ask "Do you have experience working in an agile team?").
-
-Limit to the 10 most useful missing details. Generate at least 5 details if possible.
-Return only valid JSON matching the schema below. Do not wrap it in markdown block code or add comments.
+- Cover every kind the posting genuinely asks about. AT MOST a third of your items may be kind "tool" — hiring managers are persuaded by demonstrated responsibilities, judgment, and stakeholder work, not only tool checklists.
+- Write each "question" conversationally, the way a colleague would ask, and so it can be answered yes or no. One discrete topic per question — never use "and", "or", "/", or "&", and never bundle several skills into one question.
+- When likelyRoles names a role, the question should connect it to the gap, e.g. "When you built churn models at Beta Inc, did you present the results to executives?" — the role gives the person a concrete memory to check.
+- In likelyRoles, copy "position" and "company" VERBATIM from the work history so they can be matched. Add a short "why" naming what in that role implies the gap. List at most 3 roles per question, best match first. Use an empty array when nothing plausibly fits.
+- These are candidates for the person to confirm, NOT facts. Never state that they did something — ask.
+- Write "whyItMatters" as one short sentence on why the posting cares about this, grounded in the posting's own wording.
+- Keep "plainspokenDetail" simple, factual, and reusable as a work-history bullet if the person confirms without elaborating (e.g. "Presented analytical findings to senior leadership.").
+- Write "answerPlaceholder" as a short first-person example answer starting with "Yes, I", hinting at the specifics worth including (what they did and, when natural, what came of it). Keep it realistic and plainspoken.
+- Avoid vague catch-all questions: never use "various", "overall", "general", "such as", "including", "etc", or the words "duties", "tasks", "functions", "responsibilities" inside a question — ask about one concrete activity instead.
+- Limit to the ${MAX_MISSING_EXPERIENCE_ITEMS} most useful gaps, ordered by how much addressing them would strengthen this application. Aim for at least 6 when the posting supports them.
+- Return only valid JSON matching the schema below. Do not wrap it in markdown fences or add comments.
 </instructions>
 
 <schema>
 {
   "missingExperienceDetails": [
     {
-      "skill": "Specific skill or detail from the job description (e.g., Customer discovery interviews)",
-      "whyItMatters": "Short reason this appears important in the job description.",
-      "question": "Do you have experience...",
-      "plainspokenDetail": "Reusable work history detail (e.g., Conducted customer discovery interviews to identify user needs.)",
-      "answerPlaceholder": "Yes, I ... (a short first-person example answer that fits the question)"
+      "skill": "Short name of the gap (e.g. Executive communication)",
+      "kind": "responsibility | leadership | collaboration | communication | method | tool | domain | approach",
+      "whyItMatters": "Why the posting cares, in its own terms.",
+      "question": "When you built churn models at Beta Inc, did you present the results to executives?",
+      "likelyRoles": [
+        {
+          "position": "Copied verbatim from work_history",
+          "company": "Copied verbatim from work_history",
+          "why": "What in this role implies the gap."
+        }
+      ],
+      "plainspokenDetail": "Reusable work-history detail if confirmed without elaboration.",
+      "answerPlaceholder": "Yes, I presented quarterly model results to our VP of Product."
     }
   ]
 }
 </schema>`;
 }
 
+// Hard rejects for questions that bundle topics or hide behind category words —
+// they produce mushy answers that don't convert into credible bullets.
 function isSpecificExperienceQuestion(value) {
   const question = String(value ?? "").trim().toLowerCase();
   if (!question) return false;
 
   const broadPatterns = [
     /\band\b/,
+    /\bor\b/,
     /[/&]/,
-    /\ball\b/,
-    /\bany\b/,
     /\bvarious\b/,
-    /\bmultiple\b/,
     /\boverall\b/,
     /\bgeneral\b/,
     /\bfunctions?\b/,
     /\bduties\b/,
     /\btasks\b/,
     /\bresponsibilities\b/,
-    /\bfront[-\s]?end\b/,
     /\bincluding\b/,
     /\bsuch as\b/,
-    /\blike\b/,
     /\betc\b/,
   ];
 
   return !broadPatterns.some((pattern) => pattern.test(question));
 }
 
-function formatExperienceQuestion(value) {
+function normalizeQuestionText(value, skill) {
   const question = String(value ?? "").trim();
-  if (!question) return "";
-  if (/^do you have experience\b/i.test(question)) return question;
-
-  const normalized = question
-    .replace(/^have you\s+/i, "")
-    .replace(/^are you experienced (?:with|in)\s+/i, "")
-    .replace(/^can you\s+/i, "")
-    .replace(/^do you know how to\s+/i, "")
-    .replace(/[?.!]*$/, "")
-    .trim();
-
-  return `Do you have experience ${normalized}?`;
+  if (!question) return `Do you have experience with ${skill}?`;
+  return /[?]$/.test(question) ? question : `${question.replace(/[.!]+$/, "")}?`;
 }
 
-function normalizeMissingExperienceDetail(value) {
+const normalizeRoleField = (value) => String(value ?? "").trim().toLowerCase();
+
+// Match a role the model named back to a stored work-history item, tolerating
+// light rewording the same way the resume generator's isSameRole does.
+function findWorkItemForRole(entry, workHistory) {
+  const position = normalizeRoleField(entry?.position);
+  const company = normalizeRoleField(entry?.company);
+  if (!position && !company) return null;
+
+  return (
+    (workHistory ?? []).find((item) => {
+      const itemPosition = normalizeRoleField(item.position);
+      const itemCompany = normalizeRoleField(item.company);
+      const companyMatches = company && itemCompany === company;
+      const positionMatches = position && itemPosition === position;
+      if (companyMatches && positionMatches) return true;
+      if (companyMatches && !position) return true;
+      if (positionMatches && !company) return true;
+      return false;
+    }) ?? null
+  );
+}
+
+function normalizeLikelyRoles(value, workHistory) {
+  const seen = new Set();
+
+  return normalizeStoredList(value, [])
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const item = findWorkItemForRole(entry, workHistory);
+      if (!item || seen.has(item.id)) return null;
+      seen.add(item.id);
+      return {
+        workId: item.id,
+        label: [item.position, item.company].filter(Boolean).join(" at ") || "Untitled role",
+        why: typeof entry.why === "string" ? entry.why.trim() : "",
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function normalizeMissingExperienceDetail(value, workHistory) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 
-  const skill = typeof value.skill === "string" ? value.skill.trim() : "";
+  const skill = typeof value.skill === "string" ? value.skill.replace(/\s+/g, " ").trim() : "";
   if (!skill) return null;
+
+  const question = normalizeQuestionText(value.question, skill);
+  if (!isSpecificExperienceQuestion(question)) return null;
+
+  const kindRaw = typeof value.kind === "string" ? value.kind.trim().toLowerCase() : "";
+  const kind = MISSING_EXPERIENCE_KIND_SET.has(kindRaw) ? kindRaw : "responsibility";
 
   const plainspokenDetail =
     typeof value.plainspokenDetail === "string" && value.plainspokenDetail.trim()
       ? value.plainspokenDetail.trim()
       : `Experience with ${skill}.`;
-  const question =
-    typeof value.question === "string" && value.question.trim()
-      ? formatExperienceQuestion(value.question)
-      : `Do you have experience with ${skill}?`;
-
-  if (!isSpecificExperienceQuestion(question)) return null;
 
   const answerPlaceholder =
     typeof value.answerPlaceholder === "string" && value.answerPlaceholder.trim()
@@ -120,21 +201,33 @@ function normalizeMissingExperienceDetail(value) {
 
   return {
     skill,
+    kind,
     whyItMatters: typeof value.whyItMatters === "string" ? value.whyItMatters.trim() : "",
     question,
+    likelyRoles: normalizeLikelyRoles(value.likelyRoles, workHistory),
     plainspokenDetail,
     answerPlaceholder,
   };
 }
 
-export function validateMissingExperienceDetails(value) {
+export function validateMissingExperienceReview(value, workHistory) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The model did not return valid missing experience JSON.");
   }
 
+  const seenSkills = new Set();
+
   return normalizeStoredList(value.missingExperienceDetails, [])
-    .map(normalizeMissingExperienceDetail)
-    .filter(Boolean);
+    .map((entry) => normalizeMissingExperienceDetail(entry, workHistory))
+    .filter(Boolean)
+    .filter((detail) => {
+      const key = detail.skill.toLowerCase();
+      if (seenSkills.has(key)) return false;
+      seenSkills.add(key);
+      return true;
+    })
+    .slice(0, MAX_MISSING_EXPERIENCE_ITEMS)
+    .map((detail, index) => ({ id: `missing-${index}`, ...detail }));
 }
 
 export function formatExperienceElaboration({ question, answer }) {

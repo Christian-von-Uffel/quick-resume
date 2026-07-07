@@ -145,6 +145,32 @@ describe("replaceSentence", () => {
     );
   });
 
+  it("replaces a sentence inside a paragraph despite whitespace drift", () => {
+    const description = "Owned the roadmap.  Drove   synergy\nacross the org. Shipped v2.";
+    const { description: next, replaced } = replaceSentence(
+      description,
+      "Drove synergy across the org.",
+      "Coordinated engineering and design work."
+    );
+
+    expect(replaced).toBe(true);
+    expect(next).toContain("Coordinated engineering and design work.");
+    expect(next).not.toMatch(/synergy/);
+    expect(next).toContain("Owned the roadmap.");
+    expect(next).toContain("Shipped v2.");
+  });
+
+  it("keeps dollar-sign sequences in the rewrite literal", () => {
+    const { description: next, replaced } = replaceSentence(
+      "Did stuff.",
+      "Did stuff.",
+      "Saved $2M in vendor costs, plus $$ on tooling."
+    );
+
+    expect(replaced).toBe(true);
+    expect(next).toBe("Saved $2M in vendor costs, plus $$ on tooling.");
+  });
+
   it("matches a bulleted line ignoring the marker and preserves the prefix", () => {
     const description = "- Led the team.\n- Drove synergy across the org.";
     const { description: next, replaced } = replaceSentence(

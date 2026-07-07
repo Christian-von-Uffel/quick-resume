@@ -1,6 +1,23 @@
-import { getVisibleContactLine } from "./resumeModel";
+import { getVisibleContactLine, normalizeStoredList, splitDescriptionIntoDetails } from "./resumeModel";
 import { MONTH_OPTIONS } from "./constants";
 import { formatMonthSpan } from "./workHistoryTimeline";
+
+// The resume generation pipeline, in the order the UI reports progress:
+//   Step 1  buildJobAnalysisPrompt   -> company/position for the saved title, plus
+//                                       the key responsibilities and must-have
+//                                       requirements that anchor everything after
+//   Step 2  selectRankedEvidence     -> which roles and bullets to use, with each
+//                                       role's bullets ordered most-applicable-first
+//   Step 3  composeResume            -> final markdown; the title line says what the
+//                                       candidate has BEEN, never the job they want
+// Every step grounds its output in the person's stored history — bullets are
+// evidence to reorder and sharpen, never facts to invent.
+
+export const GENERATE_STEPS = [
+  { id: "analyze", label: "Reading the job's responsibilities and requirements" },
+  { id: "select", label: "Selecting and ranking your most applicable experience" },
+  { id: "compose", label: "Writing the tailored resume" },
+];
 
 const REASON_LABELS = {
   current: "current position — always list",
@@ -40,11 +57,11 @@ function isSameRole(a, b) {
   return (company && startYear) || (company && position) || (position && startYear);
 }
 
+// One entry per stored detail — bullet lines and the separate sentences of any
+// paragraph-style description both count, so prose-formatted histories backfill
+// as real bullets instead of one blob line.
 function bulletsFromDescription(description) {
-  return String(description ?? "")
-    .split("\n")
-    .map((line) => line.replace(/^[-•*]\s*/, "").trim())
-    .filter(Boolean);
+  return splitDescriptionIntoDetails(description);
 }
 
 // Prompt block listing the roles the resume MUST include for a continuous,
@@ -150,6 +167,282 @@ You still decide which bullets to surface for each role and how much space each 
 `;
 }
 
+/* ── Step 1: analyze the job description ───────────────────── */
+// One call extracts everything later steps need from the job description: the
+// company/position for the saved resume's title, the key responsibilities that
+// bullets are ranked against, and the must-have requirements the summary may
+// mirror (only where the evidence backs them).
+export function buildJobAnalysisPrompt(jobDescription) {
+  return `<task>
+You are reading a job description to prepare a tailored resume.
+1. Extract the company name and the position title, for the saved resume's name.
+2. List the role's key responsibilities — the actual day-to-day work the hire will do — ordered most central to the job first.
+3. List the must-have requirements: the skills, tools, methods, and qualifications the posting treats as essential.
+</task>
+
+<job_description>
+${jobDescription}
+</job_description>
+
+<instructions>
+- Base every item ONLY on this job description. Do not add responsibilities or requirements that are merely typical for this kind of title.
+- Use empty strings when the company or position cannot be confidently determined. Do not infer missing values from general context.
+- Write each responsibility as one short plain-language phrase naming ONE kind of work (e.g. "Build predictive models on employee data"). Merge duplicates. 3 to 6 items, the most central first.
+- Write each requirement as a short phrase naming one skill, tool, method, or qualification (e.g. "Python", "Stakeholder communication"). Up to 8 items, most emphasized first.
+- Return only valid JSON matching the schema below. Do not wrap it in markdown fences or add comments.
+</instructions>
+
+<schema>
+{
+  "company": "",
+  "position": "",
+  "keyResponsibilities": [
+    "Most central responsibility, as a short phrase."
+  ],
+  "mustHaveRequirements": [
+    "A skill, tool, method, or qualification the posting requires."
+  ]
+}
+</schema>`;
+}
+
+// Clean up the model's job analysis: trim everything, drop empties and
+// duplicates, cap list lengths. Missing lists degrade to empty arrays so a
+// weak extraction still lets generation proceed.
+export function validateJobAnalysis(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("The model did not return a valid job analysis.");
+  }
+
+  const cleanList = (list, cap) => {
+    const seen = new Set();
+    return normalizeStoredList(list, [])
+      .map((entry) => (typeof entry === "string" ? entry.replace(/\s+/g, " ").trim() : ""))
+      .filter(Boolean)
+      .filter((entry) => {
+        const key = entry.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, cap);
+  };
+
+  return {
+    company: typeof value.company === "string" ? value.company.trim() : "",
+    position: typeof value.position === "string" ? value.position.trim() : "",
+    keyResponsibilities: cleanList(value.keyResponsibilities, 6),
+    mustHaveRequirements: cleanList(value.mustHaveRequirements, 8),
+  };
+}
+
+// Shared prompt block presenting the step-1 analysis to later steps.
+function describeJobAnalysis(jobAnalysis) {
+  const target = [jobAnalysis?.position, jobAnalysis?.company].filter(Boolean).join(" at ");
+  const responsibilities = (jobAnalysis?.keyResponsibilities ?? [])
+    .map((entry) => `- ${entry}`)
+    .join("\n");
+  const requirements = (jobAnalysis?.mustHaveRequirements ?? [])
+    .map((entry) => `- ${entry}`)
+    .join("\n");
+
+  return `<job_requirements>
+Target: ${target || "(not stated in the job description)"}
+Key responsibilities, most central first:
+${responsibilities || "- (none extracted — use the job description directly)"}
+Must-have requirements:
+${requirements || "- (none extracted — use the job description directly)"}
+</job_requirements>`;
+}
+
+/* ── Step 2: select and rank the evidence ───────────────────── */
+// Chooses which roles and bullets make the resume, with the ordering the final
+// document will keep: within every role, bullets are ranked by how directly
+// they evidence the job's key responsibilities, most applicable first.
+export function selectRankedEvidence({ profile, workHistory, jobAnalysis, instructions, coverage }) {
+  return `<task>
+You are choosing the evidence for a resume tailored to one specific job, from the candidate's stored work history.
+1. Read the job's key responsibilities and must-have requirements below.
+2. Include every role listed in mandatory_roles (timeline continuity), then add any other roles that give direct evidence for this job.
+3. For each included role, select the details from its description that best evidence the responsibilities and requirements.
+4. Order each role's selectedBullets by how directly they apply to this job, MOST APPLICABLE FIRST — the first bullet is the one a rushed hiring manager must see. Tag each bullet with the key responsibility or requirement it supports.
+5. Tag each role's overall fit tier.
+</task>
+
+${describeJobAnalysis(jobAnalysis)}
+
+<profile>
+${JSON.stringify(profile, null, 2)}
+</profile>
+
+<complete_work_history>
+${JSON.stringify(workHistory, null, 2)}
+</complete_work_history>
+
+<job_description>
+${instructions || "No job description provided. Select the most broadly relevant, concrete, and recent experience."}
+</job_description>
+${describeMandatoryRoles(coverage)}
+<selection_policy>
+- Always include every role in mandatory_roles, even weak matches, so the resume shows continuous employment with no unexplained gaps.
+- Beyond those, prefer direct evidence of fit over general impressiveness. Exclude experience that is impressive but does not help a hiring manager quickly see role fit.
+- Every bullet must restate facts already present in that role's stored description. You may tighten wording for clarity, but never invent employers, dates, tools, metrics, schools, or responsibilities, and never import job-description phrases the stored history does not support.
+- selectedSkills holds hands-on skills, tools, and methods only. An education requirement in the posting is already covered by the profile's education, which renders in its own resume section — never restate a degree or school as a skill.
+- Stored descriptions may be bullet lines or flowing sentences in a paragraph — treat each distinct fact as a selectable detail either way, and split a sentence that packs several facts into separate bullets when that reads better.
+- Keep the selection plain, credible, and specific.
+- List roles most-recent-first. Roles sharing one employer form a single company block showing progression, most recent title first. When roles overlap in time, lead with the primary named in mandatory_roles.
+</selection_policy>
+
+<ranking_bullets>
+Within each role, order selectedBullets by applicability to THIS job, not by how the stored description happens to be written:
+- First: bullets that directly evidence a key responsibility, strongest and most central responsibility first.
+- Then: bullets that evidence a must-have requirement (a tool, skill, or qualification).
+- Last: any bullet kept only for context or scope of the role.
+Set "supports" to the specific responsibility or requirement the bullet evidences, copied or closely paraphrased from job_requirements — or "general" for context bullets.
+</ranking_bullets>
+
+<reconciliation>
+Tag every selected role with a "fit" tier and let it drive how much space the role gets, so timeline continuity never crowds out suitability:
+- "strong": directly matches the target role — lead with these and give them the most bullets.
+- "supporting": relevant but secondary — include with a few bullets.
+- "timeline-only": required only to keep employment continuous (see mandatory_roles) and a weak match for this job — keep it (never drop it), but minimize it to its title and dates plus at most one concise line; do not pad it with bullets that dilute the resume's focus.
+Among roles of equal fit, prefer the more recent one for emphasis and ordering. A mandatory role that genuinely fits the target job should be tagged "strong" or "supporting", not "timeline-only".
+</reconciliation>
+
+<instructions>
+Return only valid JSON matching the schema below. Do not wrap it in markdown fences or add comments.
+Copy each selected role's position, company, and dates exactly from complete_work_history.
+Use excludedItems to explain what you intentionally left out and why.
+</instructions>
+
+<schema>
+{
+  "fitSummary": "One plain-language sentence explaining the candidate's fit.",
+  "selectedWorkHistory": [
+    {
+      "position": "",
+      "company": "",
+      "startMonth": "",
+      "startYear": "",
+      "endMonth": "",
+      "endYear": "",
+      "fit": "strong | supporting | timeline-only",
+      "fitReason": "",
+      "selectedBullets": [
+        {
+          "text": "Source-grounded detail, most applicable to this job first.",
+          "supports": "The key responsibility or requirement this evidences, or \\"general\\"."
+        }
+      ]
+    }
+  ],
+  "selectedSkills": [
+    "A hands-on skill, tool, or method evidenced in the work history — never a degree, school, or other education credential."
+  ],
+  "excludedItems": [
+    {
+      "position": "",
+      "company": "",
+      "reason": "Why this was less aligned with the target role."
+    }
+  ]
+}
+</schema>`;
+}
+
+const FIT_TIERS = new Set(["strong", "supporting", "timeline-only"]);
+
+// Coerce a model-supplied fit tag to a known tier, defaulting to "supporting"
+// when absent or unrecognized.
+export function normalizeFitTier(value) {
+  const tier = String(value ?? "").trim().toLowerCase();
+  return FIT_TIERS.has(tier) ? tier : "supporting";
+}
+
+// A selected bullet is `{ text, supports }`, ordered most-applicable-first.
+// Models sometimes return plain strings despite the schema; accept those too so
+// one lazy response doesn't sink the whole generation.
+function normalizeSelectedBullet(value) {
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text ? { text, supports: "" } : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const text = typeof value.text === "string" ? value.text.trim() : "";
+  if (!text) return null;
+
+  return {
+    text,
+    supports: typeof value.supports === "string" ? value.supports.trim() : "",
+  };
+}
+
+function normalizeSelectedRole(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  return {
+    ...value,
+    fit: normalizeFitTier(value.fit),
+    selectedBullets: normalizeStoredList(value.selectedBullets, [])
+      .map(normalizeSelectedBullet)
+      .filter(Boolean),
+  };
+}
+
+// Words of a stored credential, for loose matching ("BBA, Finance & Marketing"
+// -> bba/finance/marketing).
+const credentialWords = (value) =>
+  String(value ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+
+// The selection model sometimes "covers" a degree requirement by copying an
+// education credential into selectedSkills, where it reads as keyword stuffing.
+// Degrees belong only in the EDUCATION section, so drop any skill that restates
+// a stored degree or school. A multi-word credential matches when the skill
+// contains every one of its words (catches "BBA in Finance & Marketing —
+// Hofstra"); a single-word credential ("MBA") matches only a skill that is
+// exactly that word, so a real skill sharing a word ("Product Marketing"
+// against a "Marketing" degree) survives.
+function dropEducationCredentialSkills(skills, education) {
+  const credentials = (education ?? [])
+    .flatMap((item) => [item?.degree, item?.school])
+    .map(credentialWords)
+    .filter((words) => words.length > 0);
+  if (!credentials.length) return skills;
+
+  return skills.filter((skill) => {
+    if (typeof skill !== "string") return true;
+    const words = credentialWords(skill);
+    const wordSet = new Set(words);
+    return !credentials.some((credential) =>
+      credential.length === 1
+        ? words.length === 1 && words[0] === credential[0]
+        : credential.every((word) => wordSet.has(word))
+    );
+  });
+}
+
+export function validateSelectedResumeEvidence(value, profile) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("The model did not return valid fit selection JSON.");
+  }
+
+  return {
+    fitSummary: typeof value.fitSummary === "string" ? value.fitSummary.trim() : "",
+    selectedWorkHistory: normalizeStoredList(value.selectedWorkHistory, [])
+      .map(normalizeSelectedRole)
+      .filter(Boolean),
+    selectedSkills: dropEducationCredentialSkills(
+      normalizeStoredList(value.selectedSkills, []),
+      profile?.education
+    ),
+    excludedItems: normalizeStoredList(value.excludedItems, []),
+  };
+}
+
 // Guarantee the deterministic rule holds even if the model dropped a required
 // role: append any missing mandatory role from the source work history.
 export function ensureRequiredRolesSelected(selectedEvidence, coverage, workHistory) {
@@ -176,164 +469,26 @@ export function ensureRequiredRolesSelected(selectedEvidence, coverage, workHist
       // keep it for continuity but flag it to be rendered compactly.
       fit: "timeline-only",
       fitReason: "Included to keep the employment timeline continuous.",
-      selectedBullets: bulletsFromDescription(source.description),
+      selectedBullets: bulletsFromDescription(source.description).map((text) => ({
+        text,
+        supports: "",
+      })),
     });
   }
 
   return { ...selectedEvidence, selectedWorkHistory: selected };
 }
 
-export function buildJobTargetPrompt(jobDescription) {
-  return `<task>
-Extract the company and position from this job description for a saved resume title.
-</task>
-
-<job_description>
-${jobDescription}
-</job_description>
-
-<instructions>
-Return only valid JSON. Do not wrap it in markdown.
-Use empty strings when the company or position cannot be confidently determined from the job description.
-Do not infer missing values from general context.
-</instructions>
-
-<schema>
-{
-  "company": "",
-  "position": ""
-}
-</schema>`;
-}
-
-export function validateExtractedJobTarget(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The model did not return valid title JSON.");
-  }
-
-  const { company, position } = value;
-  if (typeof company !== "string" || typeof position !== "string") {
-    throw new Error("The title JSON must include company and position strings.");
-  }
-
-  return {
-    company: company.trim(),
-    position: position.trim(),
-  };
-}
-
-export function selectBestFittingExperience({ profile, workHistory, instructions, coverage }) {
-  return `<task>
-Select the resume evidence that best shows the candidate is a straightforward fit for the target role, while keeping the employment timeline continuous.
-</task>
-
-<profile>
-${JSON.stringify(profile, null, 2)}
-</profile>
-
-<complete_work_history>
-${JSON.stringify(workHistory, null, 2)}
-</complete_work_history>
-
-<job_description>
-${instructions || "No job description provided. Select the most broadly relevant, concrete, and recent experience."}
-</job_description>
-${describeMandatoryRoles(coverage)}
-<selection_policy>
-Always include every role listed in mandatory_roles, even if it is a weaker match, so the resume shows continuous, current employment with no unexplained gaps.
-Beyond those, prefer direct evidence of fit over general impressiveness.
-Select roles, bullets, skills, tools, and outcomes that clearly match the target job's responsibilities and requirements.
-Exclude experience that is impressive but does not help a hiring manager quickly see role fit, unless it is a mandatory role needed for timeline continuity.
-Do not invent facts, employers, dates, tools, metrics, schools, or responsibilities.
-Do not copy phrases from the job description unless they already appear in the work history.
-Keep the selection plain, credible, and specific.
-List experience most-recent-first. When several selected roles share one employer, treat them as a single company block showing progression (a promotion history), most recent title first. When roles overlap in time, lead with the primary named in mandatory_roles and keep any concurrent secondary role lighter.
-</selection_policy>
-
-<reconciliation>
-Tag every selected role with a "fit" tier and let it drive how much space the role gets, so timeline continuity never crowds out suitability:
-- "strong": directly matches the target role — lead with these and give them the most bullets.
-- "supporting": relevant but secondary — include with a few bullets.
-- "timeline-only": required only to keep employment continuous (see mandatory_roles) and a weak match for this job — keep it (never drop it), but minimize it to its title and dates plus at most one concise line; do not pad it with bullets that dilute the resume's focus.
-Among roles of equal fit, prefer the more recent one for emphasis and ordering. A mandatory role that genuinely fits the target job should be tagged "strong" or "supporting", not "timeline-only".
-</reconciliation>
-
-<instructions>
-Return only valid JSON. Do not wrap it in markdown.
-Copy selected role metadata exactly from the provided work history.
-Tag each selected role with its fit tier: "strong", "supporting", or "timeline-only".
-Rewrite selected bullets only when needed for clarity, while preserving the facts from the source material.
-Use excludedItems to explain what you intentionally left out and why.
-</instructions>
-
-<schema>
-{
-  "fitSummary": "One plain-language sentence explaining the candidate's fit.",
-  "selectedWorkHistory": [
-    {
-      "position": "",
-      "company": "",
-      "startMonth": "",
-      "startYear": "",
-      "endMonth": "",
-      "endYear": "",
-      "fit": "strong | supporting | timeline-only",
-      "fitReason": "",
-      "selectedBullets": [
-        "Specific source-grounded bullet that supports the target role."
-      ]
-    }
-  ],
-  "selectedSkills": [
-    "Relevant skill or tool present in the profile or work history."
-  ],
-  "excludedItems": [
-    {
-      "position": "",
-      "company": "",
-      "reason": "Why this was less aligned with the target role."
-    }
-  ]
-}
-</schema>`;
-}
-
-const FIT_TIERS = new Set(["strong", "supporting", "timeline-only"]);
-
-// Coerce a model-supplied fit tag to a known tier, defaulting to "supporting"
-// when absent or unrecognized.
-export function normalizeFitTier(value) {
-  const tier = String(value ?? "").trim().toLowerCase();
-  return FIT_TIERS.has(tier) ? tier : "supporting";
-}
-
-export function validateSelectedResumeEvidence(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The model did not return valid fit selection JSON.");
-  }
-
-  const selectedWorkHistory = Array.isArray(value.selectedWorkHistory)
-    ? value.selectedWorkHistory.map((role) =>
-        role && typeof role === "object" && !Array.isArray(role)
-          ? { ...role, fit: normalizeFitTier(role.fit) }
-          : role
-      )
-    : [];
-
-  return {
-    fitSummary: typeof value.fitSummary === "string" ? value.fitSummary.trim() : "",
-    selectedWorkHistory,
-    selectedSkills: Array.isArray(value.selectedSkills) ? value.selectedSkills : [],
-    excludedItems: Array.isArray(value.excludedItems) ? value.excludedItems : [],
-  };
-}
-
-export function generateResume({ profile, selectedEvidence, instructions, jobTitle, coverage }) {
+/* ── Step 3: compose the resume markdown ────────────────────── */
+export function composeResume({ profile, selectedEvidence, jobAnalysis, instructions, coverage }) {
   const continuityInstruction = coverage?.requiredRoles?.length
     ? "\nInclude every role in the selected evidence. Do not drop roles that cover employment gaps or the current position; the work history must read as continuous and up to date."
     : "";
   return `<task>
-Generate polished resume markdown for the current resume builder from curated fit evidence.
+Generate polished resume markdown from curated, pre-ranked fit evidence.
+1. Render the format below with the profile and every role in the selected evidence.
+2. Keep each role's bullets in their given order — they are already ranked most-applicable-first for this job.
+3. Write a professional title that says what the candidate has actually been, and a summary that argues fit through the job's key responsibilities.
 </task>
 
 <format>
@@ -367,6 +522,8 @@ Year · Details
 Skill one · Skill two · Skill three
 </format>
 
+${describeJobAnalysis(jobAnalysis)}
+
 <profile>
 ${JSON.stringify(profile, null, 2)}
 </profile>
@@ -388,24 +545,31 @@ Work history dates are stored as numeric months ("01"-"12") and years ("2020", o
 
 Experience section:
 - List roles most-recent-first.
+- Each selectedBullets entry has "text" (the detail) and "supports" (the job responsibility or requirement it evidences). Render only the text as the bullet line; "supports" exists so you understand why the order matters.
+- KEEP each role's bullets in the given order — they are already ranked most-applicable-first for this job. The first bullet under every role must be its strongest evidence for the target role. You may tighten wording, but do not reorder, merge away, or bury the leading bullets.
 - When multiple selected roles share one employer, render them as a SINGLE company block: one "### Company" heading followed by each title with its own dates (most recent first), as shown in the format. This presents internal promotions as one continuous, growing tenure rather than separate jobs.
 - When two roles overlap in time, lead with the one already tagged the stronger fit (or the primary); do not give equal space to a concurrent secondary role.
 - Allocate bullets by recency and the role's "fit" tier: "strong" recent roles get the most bullets; "supporting" roles get a few; a "timeline-only" role gets its title and dates and at most one concise line — never pad it. This keeps the resume suitable for the target job while the timeline stays continuous.
 
+Skills section:
+- List only hands-on skills, tools, and methods from the selected evidence. Never list a degree, school, or other education credential as a skill — education appears ONLY under EDUCATION.
+
 Professional title (the line directly under the name):
-- Mirror the target role in the job description so a recruiter or ATS instantly sees a match. When the candidate's background genuinely supports it, use the exact role title from the job description.
-- Keep it a concise title, not a sentence. An optional short qualifier is fine (e.g. "Senior Product Manager — B2B SaaS & Growth").
-- Ground it in the candidate's real experience; never claim a level or specialty the selected evidence does not support.${profile.headline ? `\n- The candidate's saved headline is "${profile.headline}". Use it as a starting point and adapt it toward the target role.` : ""}
-- If no job description is provided, use ${profile.headline || jobTitle ? `"${profile.headline || jobTitle}"` : "a concise professional title drawn from the strongest, most recent experience"}.
+- The title line states what the candidate HAS ACTUALLY BEEN — it is a fact about their history, not a label for the job they want. NEVER use the target job's title (or a trivial variant of it) unless a role in the selected evidence carries that exact title.
+- Build it from the candidate's real titles${profile.headline ? ` or their saved headline "${profile.headline}"` : ""}, most recent experience first. You may append a short truthful specialty qualifier that points toward the target role's domain when the selected evidence supports it (e.g. "Product Manager — Analytics & Experimentation" for a data-focused target), but the base identity must be real.
+- Keep it a concise title, not a sentence.
+- If no job description is provided, use ${profile.headline || jobAnalysis?.position ? `"${profile.headline || jobAnalysis.position}"` : "a concise professional title drawn from the strongest, most recent experience"}.
 
 Professional summary (the line under the divider):
-- Write 2-3 sentences positioned as a pitch for this specific role, not a generic bio.
-- Lead with the candidate's fit for the target title, then weave in the requirements, skills, and keywords from the job description that the candidate genuinely meets — matching the job's own wording where truthful, so it passes both recruiter scanning and ATS keyword matching.
+- Write 2-3 sentences that argue fit through the job's key responsibilities, not through a claimed identity. Never open with the target job title as if the candidate already holds it (e.g. do NOT write "Data Scientist with 8 years..." unless a selected role carries that title).
+- Open with the candidate's real professional identity, then connect their strongest selected evidence directly to the most central key responsibilities in job_requirements — the reader should finish the summary thinking "they have already done the core of this job", not "they claim to be one of these".
 - Anchor it with one or two of the strongest, most relevant achievements from the selected evidence, with real metrics where available.
-- Only mirror job-description language the candidate can actually back up with the selected evidence and profile. Do not invent qualifications, years of experience, tools, or outcomes.
+- Mirror the job description's own wording for skills and requirements ONLY where the selected evidence actually demonstrates them, so it passes recruiter scanning and ATS keyword matching without overstating. Do not invent qualifications, years of experience, tools, or outcomes.
+- Mention education only when it clearly satisfies an education requirement stated in the job description; when the match is partial or borderline, leave it to the EDUCATION section rather than spotlighting it in the summary.
 </instructions>`;
 }
 
+/* ── Job description scraping helpers ───────────────────────── */
 export function extractJobDescription({ title, metaDescription, rawText }) {
   return `<task>
 Extract and print out just the core job description from the provided raw page text.

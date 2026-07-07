@@ -70,12 +70,12 @@ async function fetchAllGeminiModels(apiKey) {
     if (pageToken) params.set("pageToken", pageToken);
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?${params}`);
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(data.error?.message ?? "Could not load Gemini models.");
+      throw new Error(describeLlmApiError("Gemini", response.status, data?.error?.message ?? ""));
     }
 
-    models.push(...(data.models ?? []));
+    models.push(...(data?.models ?? []));
     pageToken = data.nextPageToken ?? null;
   } while (pageToken);
 
@@ -98,12 +98,12 @@ async function fetchAllAnthropicModels(apiKey) {
         "anthropic-dangerous-direct-browser-access": "true",
       },
     });
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(data.error?.message ?? "Could not load Anthropic models.");
+      throw new Error(describeLlmApiError("Anthropic", response.status, data?.error?.message ?? ""));
     }
 
-    models.push(...(data.data ?? []));
+    models.push(...(data?.data ?? []));
     if (!data.has_more || !data.last_id) break;
     afterId = data.last_id;
   }
@@ -225,10 +225,72 @@ function extractJson(text) {
 }
 
 /* ── Provider request layer ────────────────────────────────── */
+// Ceiling for a single model call. Non-streaming generations on large models can
+// legitimately run past a minute, but without a cap a stalled endpoint leaves the
+// UI on "Generating..." forever with no way to tell what went wrong.
+const REQUEST_TIMEOUT_MS = 180_000;
+
+// Providers don't agree on status codes for the failures users actually need to
+// distinguish (Gemini returns bad keys as 400, Anthropic reports empty credit
+// balances as 400, OpenAI reports exhausted quotas as 429), so classification
+// has to look at the message text as well as the status.
+const AUTH_ERROR_PATTERN =
+  /api[ _-]?key (?:not valid|invalid)|invalid (?:x-)?api[ _-]?key|incorrect api key|api_key_invalid|unauthorized|authentication|permission[ _]?error/i;
+const BILLING_ERROR_PATTERN =
+  /credit balance|billing|exceeded your current quota|insufficient_quota|out of credits|payment method|purchase/i;
+const MISSING_MODEL_PATTERN = /model/i;
+const NOT_FOUND_PATTERN = /not found|does not exist|not supported/i;
+
+// Turn a provider HTTP failure into a message that says what to DO — fix the
+// key, top up credits, wait out a rate limit, pick another model, or just try
+// later — instead of only echoing the provider's raw (often terse) message.
+export function describeLlmApiError(provider, status, apiMessage) {
+  const detail = apiMessage ? ` ${provider} said: "${apiMessage}"` : "";
+
+  if (status === 401 || status === 403 || AUTH_ERROR_PATTERN.test(apiMessage)) {
+    return `${provider} rejected your API key (HTTP ${status}). Check the key in Settings — it may be mistyped, expired, or revoked.${detail}`;
+  }
+  if (status === 402 || BILLING_ERROR_PATTERN.test(apiMessage)) {
+    return `${provider} refused the request for billing reasons (HTTP ${status}). You may be out of credits — check your ${provider} plan and billing.${detail}`;
+  }
+  if (status === 429) {
+    return `${provider} is rate-limiting your key (HTTP 429). Wait a moment and try again.${detail}`;
+  }
+  if (status === 404 || (MISSING_MODEL_PATTERN.test(apiMessage) && NOT_FOUND_PATTERN.test(apiMessage))) {
+    return `${provider} can't find the selected model (HTTP ${status}). It may be renamed or unavailable to your account — pick a different model in Settings.${detail}`;
+  }
+  if (status >= 500) {
+    return `${provider} is down or overloaded (HTTP ${status}). This is on their side — try again in a minute.${detail}`;
+  }
+  return `${provider} rejected the request (HTTP ${status}).${detail}`;
+}
+
 // Optional sampling params that some models reject: OpenAI's reasoning models
 // don't accept `temperature`, and Anthropic removed `temperature`/`top_p`/`top_k`
 // on its newer models (Opus 4.8, Fable 5, ...) — sending them there returns a 400.
 const DROPPABLE_MODEL_PARAMS = ["temperature", "top_p", "top_k"];
+
+// Params each provider/model pair has already rejected this session. The
+// drop-and-retry probe below discovers them, but without a memo it re-probes on
+// EVERY call — and the browser logs each rejected attempt as a console 400, so
+// a three-call generation litters the console with red even though it works.
+// With the memo, only the first call to a given model pays the probe.
+const sessionRejectedParams = new Map();
+
+export function rememberSessionRejectedParam(memoKey, param) {
+  if (!memoKey) return;
+  if (!sessionRejectedParams.has(memoKey)) sessionRejectedParams.set(memoKey, new Set());
+  sessionRejectedParams.get(memoKey).add(param);
+}
+
+export function omitSessionRejectedParams(memoKey, body) {
+  const rejected = memoKey ? sessionRejectedParams.get(memoKey) : null;
+  if (!rejected?.size) return body;
+
+  const next = { ...body };
+  for (const param of rejected) delete next[param];
+  return next;
+}
 
 // Find a parameter the API rejected so we can drop it and retry. Handles both
 // OpenAI's quoted phrasing ("Unsupported parameter: 'temperature' ...") and
@@ -251,33 +313,55 @@ function getUnsupportedParam(message, body) {
 // Rather than maintain a per-model allowlist, POST the request and, if the API
 // rejects a parameter as unsupported, drop that parameter and retry. This keeps
 // a single code path working across providers and future models.
-async function postModelJson(url, headers, body, fallbackMessage) {
-  let attempt = { ...body };
+async function postModelJson(url, headers, body, provider, memoKey) {
+  let attempt = omitSessionRejectedParams(memoKey, { ...body });
 
   // Guard against infinite loops; there are only a handful of optional params.
   for (let i = 0; i < 4; i += 1) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(attempt),
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(attempt),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+        throw new Error(
+          `${provider} didn't respond within ${REQUEST_TIMEOUT_MS / 1000} seconds. The service may be overloaded — try again in a minute.`
+        );
+      }
+      throw new Error(
+        `Couldn't reach ${provider}. Check your internet connection — or the service may be down.`
+      );
+    }
 
-    const data = await response.json();
-    if (response.ok) return data;
+    // Error bodies aren't guaranteed to be JSON (gateways can return HTML or an
+    // empty body), so parse defensively rather than masking the HTTP status
+    // behind a SyntaxError.
+    const data = await response.json().catch(() => null);
+    if (response.ok) {
+      if (data === null) {
+        throw new Error(`${provider} returned a response that couldn't be read. Try again.`);
+      }
+      return data;
+    }
 
-    const message = data.error?.message ?? "";
+    const message = data?.error?.message ?? "";
     const unsupportedParam = getUnsupportedParam(message, attempt);
 
     if (unsupportedParam) {
+      rememberSessionRejectedParam(memoKey, unsupportedParam);
       const { [unsupportedParam]: _removed, ...rest } = attempt;
       attempt = rest;
       continue;
     }
 
-    throw new Error(message || fallbackMessage);
+    throw new Error(describeLlmApiError(provider, response.status, message));
   }
 
-  throw new Error(fallbackMessage);
+  throw new Error(`${provider} request failed.`);
 }
 
 async function callGemini({ apiKey, model, prompt, file }) {
@@ -298,7 +382,8 @@ async function callGemini({ apiKey, model, prompt, file }) {
       contents: [{ role: "user", parts }],
       generationConfig: { temperature: 0.2 },
     },
-    "Gemini request failed."
+    "Gemini",
+    `gemini:${model}`
   );
 
   return data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n").trim() ?? "";
@@ -322,9 +407,12 @@ async function callOpenAI({ apiKey, model, prompt, file }) {
     {
       model,
       input: [{ role: "user", content }],
+      // Reasoning-class models reject this with a 400; the probe-and-memo in
+      // postModelJson drops it for them after the first call.
       temperature: 0.2,
     },
-    "OpenAI request failed."
+    "OpenAI",
+    `openai:${model}`
   );
 
   if (data.output_text) return data.output_text.trim();
@@ -369,7 +457,8 @@ async function callAnthropic({ apiKey, model, prompt, file }) {
       temperature: 0.2,
       messages: [{ role: "user", content }],
     },
-    "Anthropic request failed."
+    "Anthropic",
+    `anthropic:${model}`
   );
 
   return data.content?.map((block) => block.text ?? "").join("\n").trim() ?? "";

@@ -38,6 +38,8 @@ import {
   getVisibleContactLine,
   buildResumeExportName,
   INITIAL_WORK_HISTORY,
+  splitDescriptionIntoDetails,
+  normalizeDetailForComparison,
 } from "./lib/resumeModel";
 import { loadStoredAppState, saveStoredAppState } from "./lib/storage";
 import {
@@ -51,23 +53,26 @@ import {
 } from "./lib/llm";
 import { parseMarkdown, measureBlocks, layoutBlocks, findOptimalFit } from "./lib/markdownLayout";
 import {
-  buildJobTargetPrompt,
-  validateExtractedJobTarget,
-  selectBestFittingExperience,
+  GENERATE_STEPS,
+  buildJobAnalysisPrompt,
+  validateJobAnalysis,
+  selectRankedEvidence,
   validateSelectedResumeEvidence,
   ensureRequiredRolesSelected,
-  generateResume,
+  composeResume,
   extractJobDescription,
   extractCleanedJobDescription,
   collapseBlankLines,
 } from "./lib/generateResume";
-import { summarizeCoverage } from "./lib/workHistoryTimeline";
+import { summarizeCoverage, getRoleInterval, formatMonthSpan } from "./lib/workHistoryTimeline";
 import { WorkHistoryTimeline } from "./components/WorkHistoryTimeline";
 import { ExperienceReview } from "./components/ExperienceReview";
+import { EnrichExperience } from "./components/EnrichExperience";
 import { importResume, coerceImportedProfile } from "./lib/importResume";
 import {
-  findMissingExperience,
-  validateMissingExperienceDetails,
+  buildMissingExperienceReviewPrompt,
+  validateMissingExperienceReview,
+  MISSING_EXPERIENCE_KIND_LABELS,
   formatExperienceElaboration,
   cleanFormattedDetail,
 } from "./lib/reviewExperience";
@@ -78,6 +83,16 @@ import {
   cleanSuggestedSentence,
   replaceSentence,
 } from "./lib/clarifyExperience";
+import {
+  buildResponsibilityMapPrompt,
+  validateResponsibilityMap,
+  buildDrilldownPrompt,
+  validateDrilldownQuestions,
+  buildEnrichedBulletPrompt,
+  cleanEnrichedBullet,
+  appendDetailToDescription,
+  isSparseDescription,
+} from "./lib/enrichExperience";
 import { buildProfileExportPayload } from "./lib/exportProfile";
 import { parseProfileExportFile } from "./lib/importProfile";
 import { printResumePage } from "./lib/exportPdf";
@@ -118,11 +133,19 @@ export default function App() {
   const [highlightedWorkId, setHighlightedWorkId] = useState(null);
   // Which position's inline clarity review is open (null = none).
   const [reviewingWorkId, setReviewingWorkId] = useState(null);
+  // Which position's inline "add details" enrichment panel is open (null = none).
+  const [enrichingWorkId, setEnrichingWorkId] = useState(null);
   // Which position is pending a delete confirmation (null = no modal open).
   const [deleteConfirmWorkId, setDeleteConfirmWorkId] = useState(null);
   const [profileDataToast, setProfileDataToast] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [generateStatus, setGenerateStatus] = useState("");
+  // Whether generateStatus holds a failure (styled as an error) rather than
+  // progress, so a failed run can't be mistaken for one that's still working.
+  const [generateFailed, setGenerateFailed] = useState(false);
+  // Index into GENERATE_STEPS while a generation runs (-1 = idle). Kept on
+  // failure so the step list can show WHERE the run died.
+  const [generateStepIndex, setGenerateStepIndex] = useState(-1);
   const [generationSourceType, setGenerationSourceType] = useState("text"); // "text" or "url"
   const [scrapeUrl, setScrapeUrl] = useState("");
   const [isScraping, setIsScraping] = useState(false);
@@ -626,6 +649,22 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [highlightedWorkId]);
 
+  const handleToggleWorkPresent = (workId, isPresent) => {
+    setWorkHistory((current) =>
+      sortWorkHistory(
+        current.map((item) =>
+          item.id === workId
+            ? normalizeWorkHistoryItem({
+                ...item,
+                endMonth: isPresent ? "" : item.endMonth,
+                endYear: isPresent ? "present" : "",
+              })
+            : item
+        )
+      )
+    );
+  };
+
   const handleUpdateWorkHistory = (workId, field, value) => {
     let nextValue = value;
     if (field === "startMonth" || field === "endMonth") {
@@ -668,6 +707,7 @@ export default function App() {
   const handleDeleteWorkHistory = (workId) => {
     setWorkHistory((current) => current.filter((item) => item.id !== workId));
     setReviewingWorkId((current) => (current === workId ? null : current));
+    setEnrichingWorkId((current) => (current === workId ? null : current));
     setDeleteConfirmWorkId((current) => (current === workId ? null : current));
   };
 
@@ -676,8 +716,16 @@ export default function App() {
     setDeleteConfirmWorkId(null);
   };
 
+  // The clarity review and enrichment panels share the space under a position's
+  // description, so opening one closes the other.
   const handleToggleExperienceReview = (workId) => {
     setReviewingWorkId((current) => (current === workId ? null : workId));
+    setEnrichingWorkId(null);
+  };
+
+  const handleToggleEnrichExperience = (workId) => {
+    setEnrichingWorkId((current) => (current === workId ? null : workId));
+    setReviewingWorkId(null);
   };
 
   // Ask the model which sentences in a position's description are hard to read.
@@ -723,6 +771,73 @@ export default function App() {
     );
 
     setWorkHistorySaveToast(didReplace ? "Sentence updated." : "Could not find that sentence to replace.");
+    if (workHistorySaveToastTimeoutRef.current) {
+      clearTimeout(workHistorySaveToastTimeoutRef.current);
+    }
+    workHistorySaveToastTimeoutRef.current = setTimeout(() => {
+      setWorkHistorySaveToast("");
+      workHistorySaveToastTimeoutRef.current = null;
+    }, 3000);
+  }, []);
+
+  // Ask the model which responsibilities job postings for this title usually
+  // require that the description doesn't cover yet.
+  const handleLoadResponsibilityAreas = useCallback(
+    async ({ position, company, description, tenureLabel }) => {
+      const parsed = await callLlmForJson(
+        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        buildResponsibilityMapPrompt({ position, company, description, tenure: tenureLabel }),
+        null
+      );
+      return validateResponsibilityMap(parsed);
+    },
+    [llmSettings, apiKeyDrafts]
+  );
+
+  // Build click-to-answer questions for the responsibility areas the person confirmed.
+  const handleLoadDrilldownQuestions = useCallback(
+    async ({ position, company, description, areas }) => {
+      const parsed = await callLlmForJson(
+        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        buildDrilldownPrompt({ position, company, description, areas }),
+        null
+      );
+      return validateDrilldownQuestions(parsed, areas);
+    },
+    [llmSettings, apiKeyDrafts]
+  );
+
+  // Turn one area's confirmed answers into a single plainspoken bullet.
+  const handleComposeEnrichedBullet = useCallback(
+    async ({ position, area, answers }) => {
+      const text = await callLlm(
+        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        buildEnrichedBulletPrompt({ position, area, answers }),
+        null
+      );
+      return cleanEnrichedBullet(text);
+    },
+    [llmSettings, apiKeyDrafts]
+  );
+
+  // Append an accepted bullet to the stored description and confirm with a toast.
+  const handleAppendDetailToWork = useCallback((workId, bullet) => {
+    let didAppend = false;
+    setWorkHistory((current) =>
+      sortWorkHistory(
+        current.map((item) => {
+          if (item.id !== workId) return item;
+          const { description, appended } = appendDetailToDescription(item.description, bullet);
+          if (!appended) return item;
+          didAppend = true;
+          return normalizeWorkHistoryItem({ ...item, description });
+        })
+      )
+    );
+
+    setWorkHistorySaveToast(
+      didAppend ? "Detail added to the description." : "That detail is already in the description."
+    );
     if (workHistorySaveToastTimeoutRef.current) {
       clearTimeout(workHistorySaveToastTimeoutRef.current);
     }
@@ -864,15 +979,15 @@ export default function App() {
     }
 
     setIsFindingMissingExperience(true);
-    setMissingExperienceStatus("Looking for job requirements that are missing from your work history...");
+    setMissingExperienceStatus("Reviewing the job description for experience your history doesn't show yet...");
 
     try {
       const parsed = await callLlmForJson(
         applyApiKeyDrafts(llmSettings, apiKeyDrafts),
-        findMissingExperience({ workHistory, jobDescription }),
+        buildMissingExperienceReviewPrompt({ workHistory, jobDescription }),
         null
       );
-      const details = validateMissingExperienceDetails(parsed);
+      const details = validateMissingExperienceReview(parsed, workHistory);
       setMissingExperienceDetails(details);
       setConfirmedMissingExperienceSkills([]);
       setDismissedMissingExperienceSkills([]);
@@ -882,8 +997,8 @@ export default function App() {
       setMissingExperienceSaveToast("");
       setMissingExperienceStatus(
         details.length
-          ? `Found ${details.length} detail${details.length === 1 ? "" : "s"} to check.`
-          : "No obvious missing work experience details found."
+          ? `Found ${details.length} way${details.length === 1 ? "" : "s"} to address experience this job asks for.`
+          : "Your work history already covers what this job description asks for."
       );
     } catch (error) {
       setMissingExperienceStatus(error instanceof Error ? error.message : "Could not find missing details.");
@@ -935,6 +1050,14 @@ export default function App() {
 
   const handleNewPositionDraftChange = (field, value) => {
     setNewPositionDraft((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleNewPositionPresentToggle = (isPresent) => {
+    setNewPositionDraft((current) => ({
+      ...current,
+      endMonth: isPresent ? "" : current.endMonth,
+      endYear: isPresent ? "present" : "",
+    }));
   };
 
   const handleAddMissingPosition = (e) => {
@@ -1058,22 +1181,20 @@ export default function App() {
           const newLines = linesByWorkId.get(item.id);
           if (!newLines || newLines.length === 0) return item;
 
-          const existing = item.description.split("\n").map((line) => line.trim()).filter(Boolean);
-          const existingLower = new Set(existing.map((line) => line.toLowerCase()));
-          const additions = [];
+          // Shared with the enrichment flow: matches the description's existing
+          // bullet-marker style and skips duplicates (ignoring markers and case).
+          let description = item.description;
+          let added = 0;
           for (const line of newLines) {
-            const key = line.toLowerCase();
-            if (existingLower.has(key)) continue;
-            existingLower.add(key);
-            additions.push(line);
+            const result = appendDetailToDescription(description, line);
+            if (!result.appended) continue;
+            description = result.description;
+            added += 1;
           }
-          if (additions.length === 0) return item;
+          if (added === 0) return item;
 
-          savedCount += additions.length;
-          return normalizeWorkHistoryItem({
-            ...item,
-            description: [...existing, ...additions].join("\n"),
-          });
+          savedCount += added;
+          return normalizeWorkHistoryItem({ ...item, description });
         })
       );
 
@@ -1162,42 +1283,48 @@ export default function App() {
 
   const handleGenerateMarkdown = async () => {
     setIsGenerating(true);
-    setGenerateStatus("Extracting resume title details...");
+    setGenerateFailed(false);
+    setGenerateStatus("");
+    setGenerateStepIndex(0);
 
     try {
       const settingsWithDraftKeys = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
-      const targetJson = await callLlmForJson(
-        settingsWithDraftKeys,
-        buildJobTargetPrompt(generationInstructions),
-        null
+
+      // Step 1: read the job description once — the company/position for the
+      // saved resume's title plus the key responsibilities and requirements
+      // that the later steps rank bullets against and frame the summary with.
+      const jobAnalysis = validateJobAnalysis(
+        await callLlmForJson(settingsWithDraftKeys, buildJobAnalysisPrompt(generationInstructions), null)
       );
-      const extractedTarget = validateExtractedJobTarget(targetJson);
-      const resumeTitle = titleGeneratedResume(extractedTarget.company, extractedTarget.position);
+      const resumeTitle = titleGeneratedResume(jobAnalysis.company, jobAnalysis.position);
 
       // Deterministic, non-LLM rule for which roles must appear so the resume
       // shows continuous, current employment and covers recent gaps.
       const coverage = summarizeCoverage(workHistory);
 
-      setGenerateStatus("Selecting aligned work history...");
+      // Step 2: choose roles and bullets, each role's bullets ordered
+      // most-applicable-first for this specific job.
+      setGenerateStepIndex(1);
       const selectionJson = await callLlmForJson(
         settingsWithDraftKeys,
-        selectBestFittingExperience({ profile, workHistory, instructions: generationInstructions, coverage }),
+        selectRankedEvidence({ profile, workHistory, jobAnalysis, instructions: generationInstructions, coverage }),
         null
       );
       const selectedEvidence = ensureRequiredRolesSelected(
-        validateSelectedResumeEvidence(selectionJson),
+        validateSelectedResumeEvidence(selectionJson, profile),
         coverage,
         workHistory
       );
 
-      setGenerateStatus("Generating resume from selected evidence...");
+      // Step 3: compose the markdown from the pre-ranked evidence.
+      setGenerateStepIndex(2);
       const text = await callLlm(
         settingsWithDraftKeys,
-        generateResume({
+        composeResume({
           profile,
           selectedEvidence,
+          jobAnalysis,
           instructions: generationInstructions,
-          jobTitle: extractedTarget.position,
           coverage,
         }),
         null
@@ -1205,7 +1332,7 @@ export default function App() {
       const nextMarkdown = text.replace(/^```(?:markdown)?\s*/i, "").replace(/```$/i, "").trim();
       // Save each generation as its own resume so existing resumes are never overwritten.
       const generatedResume = {
-        ...createResume(extractedTarget.company, extractedTarget.position),
+        ...createResume(jobAnalysis.company, jobAnalysis.position),
         name: resumeTitle,
         content: nextMarkdown,
         updatedAt: new Date().toISOString(),
@@ -1216,10 +1343,14 @@ export default function App() {
       ]);
       setSelectedResumeId(generatedResume.id);
       setMarkdown(nextMarkdown);
+      setGenerateStepIndex(-1);
       setGenerateStatus("Generated a new resume.");
       setActiveMainTab("resume");
       setActiveResumeTab("editor");
     } catch (error) {
+      // Leave generateStepIndex where it was so the step list shows which
+      // stage of the pipeline failed.
+      setGenerateFailed(true);
       setGenerateStatus(error instanceof Error ? error.message : "Generation failed.");
     } finally {
       setIsGenerating(false);
@@ -1466,7 +1597,14 @@ export default function App() {
                 No positions match that search.
               </div>
             ) : (
-              visibleWorkHistory.map((item) => (
+              visibleWorkHistory.map((item) => {
+                const interval = getRoleInterval(item);
+                const tenureLabel = interval.dated
+                  ? formatMonthSpan(interval.end - interval.start + 1)
+                  : "";
+                const sparse = isSparseDescription(item.description);
+
+                return (
                 <div
                   key={item.id}
                   id={`work-card-${item.id}`}
@@ -1477,26 +1615,56 @@ export default function App() {
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 mb-3">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleExperienceReview(item.id)}
-                      disabled={!item.description.trim()}
-                      title={
-                        item.description.trim()
-                          ? "Ask the model to flag hard-to-read sentences"
-                          : "Add a description first to review it."
-                      }
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        reviewingWorkId === item.id
-                          ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
-                          : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
-                      }`}
-                    >
-                      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                        <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
-                      </svg>
-                      {reviewingWorkId === item.id ? "Reviewing for clarity" : "Review for clarity"}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleExperienceReview(item.id)}
+                        disabled={!item.description.trim()}
+                        title={
+                          item.description.trim()
+                            ? "Ask the model to flag hard-to-read sentences"
+                            : "Add a description first to review it."
+                        }
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          reviewingWorkId === item.id
+                            ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
+                            : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
+                        }`}
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                          <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+                        </svg>
+                        {reviewingWorkId === item.id ? "Reviewing for clarity" : "Review for clarity"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleEnrichExperience(item.id)}
+                        disabled={!item.position.trim()}
+                        title={
+                          !item.position.trim()
+                            ? "Add a position title first so the model knows what this job involves."
+                            : sparse
+                              ? "This entry looks light — answer a few quick questions to add details."
+                              : "Answer a few quick questions to add more details."
+                        }
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          enrichingWorkId === item.id
+                            ? "border-violet-500 bg-violet-500/20 text-violet-700 dark:text-violet-200"
+                            : "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20"
+                        }`}
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                          <path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z" />
+                        </svg>
+                        {enrichingWorkId === item.id ? "Adding details" : "Add details"}
+                        {sparse && enrichingWorkId !== item.id && item.position.trim() && (
+                          <span
+                            className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </button>
+                    </div>
                     <button
                       type="button"
                       onClick={() => setDeleteConfirmWorkId(item.id)}
@@ -1572,9 +1740,10 @@ export default function App() {
                           End Month
                         </span>
                         <select
-                          value={normalizeWorkMonth(item.endMonth)}
+                          value={item.endYear === "present" ? "" : normalizeWorkMonth(item.endMonth)}
                           onChange={(e) => handleUpdateWorkHistory(item.id, "endMonth", e.target.value)}
-                          className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                          disabled={item.endYear === "present"}
+                          className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           <option value="">No month</option>
                           {MONTH_SELECT_OPTIONS.map(([value, label]) => (
@@ -1591,13 +1760,24 @@ export default function App() {
                         </span>
                         <input
                           type="text"
-                          value={item.endYear ?? ""}
+                          value={item.endYear === "present" ? "" : item.endYear ?? ""}
                           onChange={(e) => handleUpdateWorkHistory(item.id, "endYear", e.target.value)}
-                          placeholder="2024 or present"
-                          className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                          disabled={item.endYear === "present"}
+                          placeholder={item.endYear === "present" ? "Present" : "2024"}
+                          className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
                         />
                       </label>
                     </div>
+
+                    <label className="flex items-center gap-2 text-sm text-neutral-300">
+                      <input
+                        type="checkbox"
+                        checked={item.endYear === "present"}
+                        onChange={(e) => handleToggleWorkPresent(item.id, e.target.checked)}
+                        className="rounded border-neutral-600 bg-neutral-900 text-amber-400 focus:ring-amber-400"
+                      />
+                      Present — I currently work here
+                    </label>
 
                     <label className="block">
                       <span className="block text-xs text-neutral-500 mb-1">
@@ -1625,9 +1805,25 @@ export default function App() {
                         onClose={() => setReviewingWorkId(null)}
                       />
                     )}
+
+                    {enrichingWorkId === item.id && (
+                      <EnrichExperience
+                        key={item.id}
+                        position={item.position}
+                        company={item.company}
+                        description={item.description}
+                        tenureLabel={tenureLabel}
+                        loadAreas={handleLoadResponsibilityAreas}
+                        loadQuestions={handleLoadDrilldownQuestions}
+                        composeBullet={handleComposeEnrichedBullet}
+                        onAcceptBullet={(bullet) => handleAppendDetailToWork(item.id, bullet)}
+                        onClose={() => setEnrichingWorkId(null)}
+                      />
+                    )}
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -1899,10 +2095,10 @@ export default function App() {
 
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                 <h2 className="text-sm font-semibold text-neutral-200">
-                  Find requirements missing from your work experience
+                  Address missing experience
                 </h2>
                 <p className="mt-1 text-sm text-neutral-500">
-                  Analyzes the job description and compares it with your saved work history to identify gaps and then asks you simple questions to address them.
+                  Reads everything this job asks for — responsibilities, leadership, stakeholders, ways of working, tools — and finds where your existing roles can say more. Each question connects a gap to the role where it probably happened.
                 </p>
                 <button
                   type="button"
@@ -1911,7 +2107,7 @@ export default function App() {
                   title={findMissingDisabledReason || undefined}
                   className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isFindingMissingExperience ? "Analyzing work history..." : "Find missing experience"}
+                  {isFindingMissingExperience ? "Reviewing the job description..." : "Address missing experience"}
                 </button>
                 {!isFindingMissingExperience && findMissingDisabledReason && (
                   <p className="mt-2 text-xs text-neutral-500">{findMissingDisabledReason}</p>
@@ -1937,9 +2133,17 @@ export default function App() {
                             <>
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div>
-                            <p className="text-sm font-medium text-neutral-200">
+                            <span className="inline-block rounded-full border border-neutral-700 bg-neutral-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+                              {MISSING_EXPERIENCE_KIND_LABELS[detail.kind] ?? "Experience"}
+                            </span>
+                            <p className="mt-1.5 text-sm font-medium text-neutral-200">
                               {detail.question}
                             </p>
+                            {detail.whyItMatters && (
+                              <p className="mt-1 text-xs text-neutral-500">
+                                {detail.whyItMatters}
+                              </p>
+                            )}
                           </div>
                           <div className="flex shrink-0 gap-2">
                             <button
@@ -1971,12 +2175,22 @@ export default function App() {
                             {(() => {
                               const positionFilter = missingExperiencePositionFilters[detail.skill] ?? "";
                               const normalizedPositionFilter = positionFilter.trim().toLowerCase();
-                              const filteredWorkHistory = workHistoryByPositionCompany.filter((item) => {
-                                const searchableText = [item.position, item.company].filter(Boolean).join(" ").toLowerCase();
-                                return !normalizedPositionFilter || searchableText.includes(normalizedPositionFilter);
-                              });
+                              // The review names the roles where this gap probably happened;
+                              // surface those first so the person starts from the likely memory.
+                              const suggestedWhyByWorkId = new Map(
+                                (detail.likelyRoles ?? []).map((role) => [role.workId, role.why])
+                              );
+                              const filteredWorkHistory = workHistoryByPositionCompany
+                                .filter((item) => {
+                                  const searchableText = [item.position, item.company].filter(Boolean).join(" ").toLowerCase();
+                                  return !normalizedPositionFilter || searchableText.includes(normalizedPositionFilter);
+                                })
+                                .sort(
+                                  (a, b) =>
+                                    Number(suggestedWhyByWorkId.has(b.id)) - Number(suggestedWhyByWorkId.has(a.id))
+                                );
                               const selectedWorkIdSet = new Set(missingExperienceSelectedPositions[detail.skill] ?? []);
-                              const detailText = detail.plainspokenDetail.replace(/^[-•]\s*/, "").trim().toLowerCase();
+                              const detailText = normalizeDetailForComparison(detail.plainspokenDetail);
 
                               return (
                                 <>
@@ -1994,9 +2208,9 @@ export default function App() {
                                       </p>
                                     ) : (
                                       filteredWorkHistory.map((item) => {
-                                        const hasDetail = item.description
-                                          .split("\n")
-                                          .some((line) => line.trim().toLowerCase() === detailText);
+                                        const hasDetail = splitDescriptionIntoDetails(item.description).some(
+                                          (line) => normalizeDetailForComparison(line) === detailText
+                                        );
                                         const isSelected = selectedWorkIdSet.has(item.id);
                                         const roleLabel = [item.position, item.company].filter(Boolean).join(" at ") || "Untitled role";
                                         const elaboration = missingExperienceElaborations[detail.skill]?.[item.id] ?? "";
@@ -2022,6 +2236,14 @@ export default function App() {
                                                 className="rounded border-neutral-600 bg-neutral-900 text-amber-400 focus:ring-amber-400"
                                               />
                                               <span>{roleLabel}</span>
+                                              {suggestedWhyByWorkId.has(item.id) && (
+                                                <span
+                                                  title={suggestedWhyByWorkId.get(item.id) || undefined}
+                                                  className="ml-auto shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                                                >
+                                                  Suggested
+                                                </span>
+                                              )}
                                             </button>
                                             {isSelected && !hasDetail && (
                                               <div className="border-t border-neutral-800/60 bg-neutral-950 px-3 py-3">
@@ -2105,8 +2327,40 @@ export default function App() {
                     {isGenerating ? "Generating..." : "Generate resume"}
                   </button>
                 )}
+                {generateStepIndex >= 0 && (
+                  <ol className="mt-3 space-y-1.5 text-sm" aria-live="polite">
+                    {GENERATE_STEPS.map((step, index) => {
+                      const isDone = index < generateStepIndex;
+                      const isActive = index === generateStepIndex;
+                      const failedHere = isActive && generateFailed;
+                      return (
+                        <li
+                          key={step.id}
+                          className={`flex items-center gap-2 ${
+                            failedHere
+                              ? "text-red-400"
+                              : isActive
+                                ? "text-amber-700 dark:text-amber-200"
+                                : isDone
+                                  ? "text-neutral-400"
+                                  : "text-neutral-600"
+                          }`}
+                        >
+                          <span aria-hidden="true" className="w-4 text-center">
+                            {failedHere ? "✕" : isDone ? "✓" : isActive ? <span className="inline-block animate-pulse">●</span> : "○"}
+                          </span>
+                          {step.label}
+                          {isActive && !generateFailed ? "…" : ""}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
                 {generateStatus && (
-                  <p className="mt-3 text-sm text-neutral-400">
+                  <p
+                    role="status"
+                    className={`mt-3 text-sm ${generateFailed ? "text-red-400 font-medium" : "text-neutral-400"}`}
+                  >
                     {generateStatus}
                   </p>
                 )}
@@ -2882,9 +3136,10 @@ export default function App() {
               <label className="block">
                 <span className="block text-xs text-neutral-500 mb-1">End Month</span>
                 <select
-                  value={normalizeWorkMonth(newPositionDraft.endMonth)}
+                  value={newPositionDraft.endYear === "present" ? "" : normalizeWorkMonth(newPositionDraft.endMonth)}
                   onChange={(e) => handleNewPositionDraftChange("endMonth", e.target.value)}
-                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 outline-none focus:border-neutral-500"
+                  disabled={newPositionDraft.endYear === "present"}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 outline-none focus:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <option value="">No month</option>
                   {MONTH_SELECT_OPTIONS.map(([value, label]) => (
@@ -2896,13 +3151,24 @@ export default function App() {
                 <span className="block text-xs text-neutral-500 mb-1">End Year</span>
                 <input
                   type="text"
-                  value={newPositionDraft.endYear}
+                  value={newPositionDraft.endYear === "present" ? "" : newPositionDraft.endYear}
                   onChange={(e) => handleNewPositionDraftChange("endYear", e.target.value)}
-                  placeholder="2024 or present"
-                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                  disabled={newPositionDraft.endYear === "present"}
+                  placeholder={newPositionDraft.endYear === "present" ? "Present" : "2024"}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
                 />
               </label>
             </div>
+
+            <label className="mt-3 flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={newPositionDraft.endYear === "present"}
+                onChange={(e) => handleNewPositionPresentToggle(e.target.checked)}
+                className="rounded border-neutral-600 bg-neutral-900 text-amber-400 focus:ring-amber-400"
+              />
+              Present — I currently work here
+            </label>
 
             <div className="mt-5 flex justify-end gap-2">
               <button
