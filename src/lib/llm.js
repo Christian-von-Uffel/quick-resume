@@ -6,6 +6,7 @@ import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_LLM_SETTINGS,
   LLM_PROVIDERS,
+  MISTRAL_OCR_MODEL,
 } from "./constants";
 
 /* ── Model discovery ───────────────────────────────────────── */
@@ -170,6 +171,7 @@ export function applyApiKeyDrafts(settings, drafts) {
     openaiApiKey: drafts.openai,
     anthropicApiKey: drafts.anthropic,
     firecrawlApiKey: drafts.firecrawl,
+    mistralApiKey: drafts.mistral,
     rememberApiKey: true,
   };
 }
@@ -190,6 +192,7 @@ export function normalizeLlmSettings(value) {
   let openaiApiKey = raw.openaiApiKey ?? "";
   let anthropicApiKey = raw.anthropicApiKey ?? "";
   let firecrawlApiKey = raw.firecrawlApiKey ?? "";
+  let mistralApiKey = raw.mistralApiKey ?? "";
 
   if (raw.apiKey && !geminiApiKey && !openaiApiKey && !anthropicApiKey) {
     if (provider === "openai") openaiApiKey = raw.apiKey;
@@ -206,6 +209,7 @@ export function normalizeLlmSettings(value) {
     openaiApiKey,
     anthropicApiKey,
     firecrawlApiKey,
+    mistralApiKey,
     rememberApiKey: true,
   };
 }
@@ -348,7 +352,9 @@ async function postModelJson(url, headers, body, provider, memoKey) {
       return data;
     }
 
-    const message = data?.error?.message ?? "";
+    // Gemini/OpenAI/Anthropic nest the message under `error`; Mistral puts it
+    // at the top level.
+    const message = data?.error?.message ?? data?.message ?? "";
     const unsupportedParam = getUnsupportedParam(message, attempt);
 
     if (unsupportedParam) {
@@ -362,6 +368,45 @@ async function postModelJson(url, headers, body, provider, memoKey) {
   }
 
   throw new Error(`${provider} request failed.`);
+}
+
+/* ── Mistral OCR (document → markdown) ─────────────────────── */
+// Converts formats the chat providers can't ingest natively (Word, PowerPoint,
+// OpenDocument) into markdown text. This doesn't replace the selected chat
+// provider — whichever model the user picked still does the JSON extraction;
+// OCR only supplies it readable text.
+export async function callMistralOcr(settings, file) {
+  const apiKey = sanitizeApiKey(settings.mistralApiKey);
+  if (!apiKey) {
+    throw new Error(
+      "Importing Word, PowerPoint, or OpenDocument files requires a Mistral API key. Add one in Settings, or convert the file to PDF first."
+    );
+  }
+
+  const dataUrl = `data:${file.mimeType};base64,${file.base64}`;
+  const data = await postModelJson(
+    "https://api.mistral.ai/v1/ocr",
+    { Authorization: `Bearer ${apiKey}` },
+    {
+      model: MISTRAL_OCR_MODEL,
+      document: file.mimeType.startsWith("image/")
+        ? { type: "image_url", image_url: dataUrl }
+        : { type: "document_url", document_url: dataUrl },
+    },
+    "Mistral",
+    null
+  );
+
+  const text = (data.pages ?? [])
+    .map((page) => page.markdown ?? "")
+    .join("\n\n")
+    .trim();
+
+  if (!text) {
+    throw new Error(`Mistral OCR found no text in ${file.name}. Check the file and try again.`);
+  }
+
+  return text;
 }
 
 async function callGemini({ apiKey, model, prompt, file }) {

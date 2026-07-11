@@ -50,6 +50,7 @@ import {
   normalizeLlmSettings,
   callLlm,
   callLlmForJson,
+  callMistralOcr,
 } from "./lib/llm";
 import { parseMarkdown, measureBlocks, layoutBlocks, findOptimalFit } from "./lib/markdownLayout";
 import {
@@ -68,11 +69,12 @@ import { summarizeCoverage, getRoleInterval, formatMonthSpan } from "./lib/workH
 import { WorkHistoryTimeline } from "./components/WorkHistoryTimeline";
 import { ExperienceReview } from "./components/ExperienceReview";
 import { EnrichExperience } from "./components/EnrichExperience";
-import { importResume, coerceImportedProfile } from "./lib/importResume";
+import { importResume, coerceImportedProfile, needsMistralOcr, resolveImportMimeType } from "./lib/importResume";
 import {
   buildMissingExperienceReviewPrompt,
   validateMissingExperienceReview,
   MISSING_EXPERIENCE_KIND_LABELS,
+  MISSING_EXPERIENCE_STEPS,
   formatExperienceElaboration,
   cleanFormattedDetail,
 } from "./lib/reviewExperience";
@@ -98,6 +100,42 @@ import { parseProfileExportFile } from "./lib/importProfile";
 import { printResumePage } from "./lib/exportPdf";
 
 /* ── Component ─────────────────────────────────────────────── */
+// Live progress for a multi-stage pipeline run: done steps get a check, the
+// active step pulses (or shows where the run died on failure), pending steps
+// stay dim. stepIndex is -1 when idle, which renders nothing.
+function PipelineSteps({ steps, stepIndex, failed }) {
+  if (stepIndex < 0) return null;
+  return (
+    <ol className="mt-3 space-y-1.5 text-sm" aria-live="polite">
+      {steps.map((step, index) => {
+        const isDone = index < stepIndex;
+        const isActive = index === stepIndex;
+        const failedHere = isActive && failed;
+        return (
+          <li
+            key={step.id}
+            className={`flex items-center gap-2 ${
+              failedHere
+                ? "text-red-400"
+                : isActive
+                  ? "text-amber-700 dark:text-amber-200"
+                  : isDone
+                    ? "text-neutral-400"
+                    : "text-neutral-600"
+            }`}
+          >
+            <span aria-hidden="true" className="w-4 text-center">
+              {failedHere ? "✕" : isDone ? "✓" : isActive ? <span className="inline-block animate-pulse">●</span> : "○"}
+            </span>
+            {step.label}
+            {isActive && !failed ? "…" : ""}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export default function App() {
   const [storedAppState] = useState(loadStoredAppState);
   const [initialResumes] = useState(() => normalizeResumeList(storedAppState.resumes));
@@ -119,6 +157,7 @@ export default function App() {
       openai: settings.openaiApiKey,
       anthropic: settings.anthropicApiKey,
       firecrawl: settings.firecrawlApiKey ?? "",
+      mistral: settings.mistralApiKey ?? "",
     };
   });
   const [modelOptionsByProvider, setModelOptionsByProvider] = useState(FALLBACK_MODEL_OPTIONS);
@@ -153,6 +192,12 @@ export default function App() {
   const [scrapeSuccess, setScrapeSuccess] = useState("");
   const [generationInstructions, setGenerationInstructions] = useState("");
   const [missingExperienceStatus, setMissingExperienceStatus] = useState("");
+  // Whether missingExperienceStatus holds a failure (styled as an error) rather
+  // than progress, so a failed review can't be mistaken for one still working.
+  const [missingExperienceFailed, setMissingExperienceFailed] = useState(false);
+  // Index into MISSING_EXPERIENCE_STEPS while a review runs (-1 = idle). Kept
+  // on failure so the step list can show WHERE the run died.
+  const [missingExperienceStepIndex, setMissingExperienceStepIndex] = useState(-1);
   const [missingExperienceDetails, setMissingExperienceDetails] = useState([]);
   const [confirmedMissingExperienceSkills, setConfirmedMissingExperienceSkills] = useState([]);
   const [dismissedMissingExperienceSkills, setDismissedMissingExperienceSkills] = useState([]);
@@ -458,6 +503,8 @@ export default function App() {
     setMissingExperienceElaborations({});
     setMissingExperienceSaveToast("");
     setMissingExperienceStatus("");
+    setMissingExperienceFailed(false);
+    setMissingExperienceStepIndex(-1);
   };
 
   const updateSelectedResumeMarkdown = (nextMarkdown, nextName) => {
@@ -551,6 +598,7 @@ export default function App() {
         openaiApiKey: current.openaiApiKey,
         anthropicApiKey: current.anthropicApiKey,
         firecrawlApiKey: current.firecrawlApiKey,
+        mistralApiKey: current.mistralApiKey,
         rememberApiKey: true,
       }));
       showProfileDataToast("Profile data imported.");
@@ -979,14 +1027,21 @@ export default function App() {
     }
 
     setIsFindingMissingExperience(true);
-    setMissingExperienceStatus("Reviewing the job description for experience your history doesn't show yet...");
+    setMissingExperienceFailed(false);
+    setMissingExperienceStatus("");
+    setMissingExperienceStepIndex(0);
 
     try {
+      // Step 1: one LLM call reads the whole posting and compares it against
+      // the stored work history, returning gap questions.
       const parsed = await callLlmForJson(
         applyApiKeyDrafts(llmSettings, apiKeyDrafts),
         buildMissingExperienceReviewPrompt({ workHistory, jobDescription }),
         null
       );
+
+      // Step 2: validate the questions and connect each to the stored roles it names.
+      setMissingExperienceStepIndex(1);
       const details = validateMissingExperienceReview(parsed, workHistory);
       setMissingExperienceDetails(details);
       setConfirmedMissingExperienceSkills([]);
@@ -995,12 +1050,16 @@ export default function App() {
       setMissingExperienceSelectedPositions({});
       setMissingExperienceElaborations({});
       setMissingExperienceSaveToast("");
+      setMissingExperienceStepIndex(-1);
       setMissingExperienceStatus(
         details.length
           ? `Found ${details.length} way${details.length === 1 ? "" : "s"} to address experience this job asks for.`
           : "Your work history already covers what this job description asks for."
       );
     } catch (error) {
+      // Leave missingExperienceStepIndex where it was so the step list shows
+      // which stage of the review failed.
+      setMissingExperienceFailed(true);
       setMissingExperienceStatus(error instanceof Error ? error.message : "Could not find missing details.");
     } finally {
       setIsFindingMissingExperience(false);
@@ -1249,12 +1308,24 @@ export default function App() {
 
     try {
       const base64 = await readFileAsBase64(file);
-      setImportStatus("Asking the model to extract profile and work history...");
-      const imported = await callLlmForJson(applyApiKeyDrafts(llmSettings, apiKeyDrafts), importResume(), {
+      const settings = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
+      const importFile = {
         name: file.name,
-        mimeType: file.type || "application/octet-stream",
+        mimeType: resolveImportMimeType(file),
         base64,
-      });
+      };
+
+      // Word/PowerPoint/OpenDocument files can't be sent to the chat providers
+      // directly; Mistral OCR turns them into markdown first, and the selected
+      // model then extracts from that text instead of the file.
+      let ocrText = null;
+      if (needsMistralOcr(file)) {
+        setImportStatus("Converting the file to text with Mistral OCR...");
+        ocrText = await callMistralOcr(settings, importFile);
+      }
+
+      setImportStatus("Asking the model to extract profile and work history...");
+      const imported = await callLlmForJson(settings, importResume(ocrText), ocrText ? null : importFile);
       const importedProfile = coerceImportedProfile(imported.profile);
       const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
 
@@ -1548,7 +1619,7 @@ export default function App() {
               <label className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20">
                 <input
                   type="file"
-                  accept="application/pdf,image/*"
+                  accept="application/pdf,image/*,.doc,.docx,.ppt,.pptx,.odt,.odp"
                   onChange={handleImportResume}
                   disabled={isImporting}
                   className="sr-only"
@@ -2112,8 +2183,16 @@ export default function App() {
                 {!isFindingMissingExperience && findMissingDisabledReason && (
                   <p className="mt-2 text-xs text-neutral-500">{findMissingDisabledReason}</p>
                 )}
+                <PipelineSteps
+                  steps={MISSING_EXPERIENCE_STEPS}
+                  stepIndex={missingExperienceStepIndex}
+                  failed={missingExperienceFailed}
+                />
                 {missingExperienceStatus && (
-                  <p className="mt-3 text-sm text-neutral-400">
+                  <p
+                    role="status"
+                    className={`mt-3 text-sm ${missingExperienceFailed ? "text-red-400 font-medium" : "text-neutral-400"}`}
+                  >
                     {missingExperienceStatus}
                   </p>
                 )}
@@ -2327,35 +2406,11 @@ export default function App() {
                     {isGenerating ? "Generating..." : "Generate resume"}
                   </button>
                 )}
-                {generateStepIndex >= 0 && (
-                  <ol className="mt-3 space-y-1.5 text-sm" aria-live="polite">
-                    {GENERATE_STEPS.map((step, index) => {
-                      const isDone = index < generateStepIndex;
-                      const isActive = index === generateStepIndex;
-                      const failedHere = isActive && generateFailed;
-                      return (
-                        <li
-                          key={step.id}
-                          className={`flex items-center gap-2 ${
-                            failedHere
-                              ? "text-red-400"
-                              : isActive
-                                ? "text-amber-700 dark:text-amber-200"
-                                : isDone
-                                  ? "text-neutral-400"
-                                  : "text-neutral-600"
-                          }`}
-                        >
-                          <span aria-hidden="true" className="w-4 text-center">
-                            {failedHere ? "✕" : isDone ? "✓" : isActive ? <span className="inline-block animate-pulse">●</span> : "○"}
-                          </span>
-                          {step.label}
-                          {isActive && !generateFailed ? "…" : ""}
-                        </li>
-                      );
-                    })}
-                  </ol>
-                )}
+                <PipelineSteps
+                  steps={GENERATE_STEPS}
+                  stepIndex={generateStepIndex}
+                  failed={generateFailed}
+                />
                 {generateStatus && (
                   <p
                     role="status"
@@ -2485,6 +2540,19 @@ export default function App() {
                       value={apiKeyDrafts.firecrawl ?? ""}
                       onChange={(e) => setApiKeyDrafts((current) => ({ ...current, firecrawl: e.target.value }))}
                       placeholder="fc-..."
+                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="block text-xs text-neutral-500 mb-1">
+                      Mistral API key
+                    </span>
+                    <input
+                      type="password"
+                      value={apiKeyDrafts.mistral ?? ""}
+                      onChange={(e) => setApiKeyDrafts((current) => ({ ...current, mistral: e.target.value }))}
+                      placeholder="Used to import Word, PowerPoint, and OpenDocument resumes"
                       className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
                     />
                   </label>

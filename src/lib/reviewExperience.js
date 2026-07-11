@@ -10,6 +10,14 @@ import { normalizeStoredList } from "./resumeModel";
 //           as one plainspoken work-history detail
 // Every question is a candidate to confirm, never an asserted fact.
 
+// The stages of the review, in the order the UI reports progress. The LLM call
+// covers step 1; step 2 is the local pass that validates the questions and
+// connects each one to the stored roles it names.
+export const MISSING_EXPERIENCE_STEPS = [
+  { id: "review", label: "Reading the job description against your work history" },
+  { id: "connect", label: "Connecting each gap to the role where it probably happened" },
+];
+
 // The kinds of things a posting asks for. The prompt requires sweeping ALL of
 // them so questions cover the posting's breadth — responsibilities, leadership,
 // stakeholders, ways of working — instead of collapsing into a tool checklist.

@@ -12,6 +12,7 @@ export const PROFILE_EXPORT_VERSION = 1;
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+export const MISTRAL_OCR_MODEL = "mistral-ocr-latest";
 
 export const LLM_PROVIDERS = [
   ["gemini", "Google"],
@@ -72,6 +73,7 @@ export const DEFAULT_LLM_SETTINGS = {
   openaiApiKey: "",
   anthropicApiKey: "",
   firecrawlApiKey: "",
+  mistralApiKey: "",
   rememberApiKey: true,
 };
 
