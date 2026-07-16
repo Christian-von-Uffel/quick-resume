@@ -81,6 +81,7 @@ import { AccountSection } from "./components/AccountSection";
 import { ExperienceReview } from "./components/ExperienceReview";
 import { EnrichExperience } from "./components/EnrichExperience";
 import { PipelineSteps } from "./components/PipelineSteps";
+import Onboarding from "./components/Onboarding";
 import { importResume, coerceImportedProfile, needsMistralOcr, resolveImportMimeType } from "./lib/importResume";
 import {
   buildMissingExperienceReviewPrompt,
@@ -233,6 +234,79 @@ export default function App({ initialData = null, userId = null }) {
     }
     return supabaseClientRef.current;
   };
+
+  // ── First-run onboarding ─────────────────────────────────────────────────
+  // Show the welcome flow to brand-new users the first time they reach the
+  // editor. "Brand-new" = an empty account (initialData is null) that hasn't
+  // completed it yet. Completion is remembered per-device via localStorage and,
+  // once the profiles.onboarding_completed_at column exists, once-ever across
+  // devices via a best-effort DB write. Both persistence paths are safe no-ops
+  // if unavailable, so the feature works before the migration is applied.
+  const onboardingKey = userId ? `1resume:onboarded:${userId}` : null;
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (initialData != null || !onboardingKey) return false;
+    try {
+      return !window.localStorage.getItem(onboardingKey);
+    } catch {
+      return true;
+    }
+  });
+
+  // If this user already completed onboarding on another device, honor that
+  // (best-effort; a missing column is ignored so this is safe pre-migration).
+  useEffect(() => {
+    if (!showOnboarding || !userId) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await getSupabaseClient()
+          .from("profiles")
+          .select("onboarding_completed_at")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!cancelled && !error && data?.onboarding_completed_at) {
+          setShowOnboarding(false);
+          if (onboardingKey) {
+            try {
+              window.localStorage.setItem(onboardingKey, "1");
+            } catch {
+              /* storage unavailable — ignore */
+            }
+          }
+        }
+      } catch {
+        /* column may not exist yet — ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // getSupabaseClient is a stable ref-backed getter; intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showOnboarding, userId, onboardingKey]);
+
+  const completeOnboarding = useCallback(() => {
+    setShowOnboarding(false);
+    if (onboardingKey) {
+      try {
+        window.localStorage.setItem(onboardingKey, "1");
+      } catch {
+        /* storage unavailable — ignore */
+      }
+    }
+    if (userId) {
+      // Best-effort; harmless if the column hasn't been migrated in yet.
+      getSupabaseClient()
+        .from("profiles")
+        .update({ onboarding_completed_at: new Date().toISOString() })
+        .eq("user_id", userId)
+        .then(
+          () => {},
+          () => {}
+        );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, onboardingKey]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1514,6 +1588,7 @@ export default function App({ initialData = null, userId = null }) {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
+      {showOnboarding && <Onboarding onComplete={completeOnboarding} />}
       <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-neutral-50">
         <div className="flex flex-wrap items-center gap-2">
           {[

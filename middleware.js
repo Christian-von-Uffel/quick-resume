@@ -1,5 +1,9 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
+import {
+  getSupabaseUrl,
+  getSupabasePublishableKey,
+} from "./src/lib/supabase/config";
 
 // Session-refreshing auth gate. The editor is subscriber-only product surface:
 // signed-out visitors of /app are sent to /login, and signed-in users have no
@@ -9,8 +13,8 @@ export async function middleware(request) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_PUBLISHABLE_KEY,
+    getSupabaseUrl(),
+    getSupabasePublishableKey(),
     {
       cookies: {
         getAll() {
