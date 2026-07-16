@@ -42,6 +42,16 @@
   --scrollbar-thumb-hover: #525252;
 }
 
+/* Hide the scrollbar on horizontally-scrolling strips (e.g. the mobile tab bar)
+   while keeping the element scrollable by touch/trackpad. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Themed scrollbar for editor */
 .pagefit-scrollbar {
   scrollbar-width: thin;

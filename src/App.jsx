@@ -1587,10 +1587,11 @@ export default function App({ initialData = null, userId = null }) {
   const pct = Math.min((measuredHeight / maxH) * 100, 100);
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-screen [height:100dvh] flex flex-col overflow-hidden">
       {showOnboarding && <Onboarding onComplete={completeOnboarding} />}
       <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-neutral-50">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto no-scrollbar sm:flex-wrap">
           {[
             ["workHistory", "Work history"],
             ["education", "Education"],
@@ -1603,7 +1604,7 @@ export default function App({ initialData = null, userId = null }) {
               key={key}
               type="button"
               onClick={() => setActiveMainTab(key)}
-              className={`rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+              className={`shrink-0 whitespace-nowrap rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
                 activeMainTab === key
                   ? "border-neutral-600 bg-neutral-800 text-neutral-50"
                   : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-50"
@@ -1612,10 +1613,11 @@ export default function App({ initialData = null, userId = null }) {
               {label}
             </button>
           ))}
+          </div>
           <button
             type="button"
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-            className="ml-auto rounded-lg border border-neutral-700 p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+            className="shrink-0 rounded-lg border border-neutral-700 p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
             aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           >
@@ -1749,7 +1751,7 @@ export default function App({ initialData = null, userId = null }) {
 
         {/* ── Work history ────────────────────────────── */}
         <div className={`flex-1 min-w-0 self-stretch flex-col min-h-0 ${activeMainTab === "workHistory" ? "flex" : "hidden"}`}>
-          <div className="px-4 py-3 border-b border-neutral-800 flex items-center justify-between gap-3">
+          <div className="px-4 py-3 border-b border-neutral-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs text-neutral-500 uppercase tracking-widest">
                 Work History
@@ -1780,7 +1782,7 @@ export default function App({ initialData = null, userId = null }) {
           </div>
 
           {sortedWorkHistory.length > 0 && (
-            <div className="px-4 py-3 border-b border-neutral-800 space-y-3">
+            <div className="px-4 py-3 border-b border-neutral-800 space-y-3 max-h-[45dvh] overflow-y-auto overscroll-contain pagefit-scrollbar sm:max-h-none sm:overflow-visible">
               <PositionReviewPrompt
                 conflicts={workConflicts}
                 onOpen={() => setIsPositionReviewOpen(true)}
@@ -1800,7 +1802,7 @@ export default function App({ initialData = null, userId = null }) {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 pagefit-scrollbar">
+          <div className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-4 pagefit-scrollbar">
             {importStatus && (
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4 text-sm text-neutral-400">
                 {importStatus}

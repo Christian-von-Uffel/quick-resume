@@ -56,6 +56,10 @@ function buildAxisTicks(domainStart, domainEnd, scalePos) {
 export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRole, onAddPosition }) {
   const [active, setActive] = useState(null);
   const [ctaVisible, setCtaVisible] = useState(false);
+  // The chart is heavy vertically; on phones it's collapsed by default behind a
+  // one-line summary so the position cards below get real scroll room. The `sm:`
+  // classes keep it always-expanded on desktop regardless of this state.
+  const [open, setOpen] = useState(false);
   const [hoverYear, setHoverYear] = useState(null); // year whose gridline is shown
   const [scaleMode, setScaleMode] = useState("recency"); // "recency" | "linear"
   // Hover-capable pointer (desktop mouse) vs. touch. Drives whether a click on a
@@ -146,6 +150,19 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
   const axisTicks = buildAxisTicks(domainStart, domainEnd, scalePos);
   const hoverTick = hoverYear == null ? null : axisTicks.find((t) => t.year === hoverYear);
   const trailingGap = gaps.find((gap) => gap.toPresent);
+
+  // One-line recap shown on the collapsed (mobile) summary bar.
+  const summaryText = [
+    coverage.currentlyEmployed
+      ? "Currently employed"
+      : trailingGap
+        ? `${formatMonthSpan(trailingGap.months)} since last role`
+        : "No current role",
+    gaps.length === 0 ? "No gaps" : `${gaps.length} gap${gaps.length === 1 ? "" : "s"}`,
+    undated.length > 0 ? `${undated.length} undated` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   // Group positions by employer so multiple titles at one company render as a
   // single colored block, with a divider seam at each promotion / internal
@@ -241,10 +258,32 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
   };
 
   return (
-    <div ref={rootRef} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+    <div ref={rootRef} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3 sm:p-4">
+      {/* Mobile-only collapse toggle. Tapping it reveals the full chart; on
+          desktop the toggle is hidden and the chart is always shown. */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 text-left sm:hidden"
+      >
+        <span className="shrink-0 text-xs uppercase tracking-widest text-neutral-400">Timeline</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-neutral-500">{summaryText}</span>
+        <svg
+          className={`h-4 w-4 shrink-0 text-neutral-500 transition-transform ${open ? "rotate-180" : ""}`}
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+        </svg>
+      </button>
+
+      {/* Full chart — hidden on mobile until expanded, always visible on desktop. */}
+      <div className={`${open ? "mt-3" : "hidden"} sm:mt-0 sm:block`}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs uppercase tracking-widest text-neutral-500">Employment timeline</p>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        <div className="hidden sm:flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
           <span className="inline-flex items-center gap-1.5">
             <span
               className={`h-2 w-2 rounded-full ${coverage.currentlyEmployed ? "bg-emerald-500" : "bg-rose-500"}`}
@@ -450,6 +489,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }
