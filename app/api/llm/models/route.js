@@ -4,6 +4,11 @@ import {
   getPreferredLlmProvider,
 } from "../../../../src/lib/server/llmProviders";
 import { getRequestUser, unauthorizedResponse } from "../../../../src/lib/server/auth";
+import {
+  getSubscriptionForUser,
+  hasActiveAccess,
+  subscriptionRequiredResponse,
+} from "../../../../src/lib/server/subscription";
 
 const PROVIDERS = new Set(["gemini", "openai", "anthropic", "xai"]);
 
@@ -13,7 +18,13 @@ const PROVIDERS = new Set(["gemini", "openai", "anthropic", "xai"]);
 // With no provider param, returns which keys are set and the preferred default
 // (xAI → Anthropic → OpenAI → Google).
 export async function GET(request) {
-  if (!(await getRequestUser())) return unauthorizedResponse();
+  const user = await getRequestUser();
+  if (!user) return unauthorizedResponse();
+  // Subscriber-only like its siblings: the catalog fetches spend the
+  // operator's provider keys and reveal which of them are configured.
+  if (!hasActiveAccess(await getSubscriptionForUser(user.id))) {
+    return subscriptionRequiredResponse();
+  }
 
   const provider = new URL(request.url).searchParams.get("provider");
 

@@ -35,7 +35,9 @@ export async function POST(request) {
     const session = await getStripe().checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: plan.stripe_price_id_monthly, quantity: 1 }],
-      subscription_data: { trial_period_days: 14 },
+      // One trial per account: any prior subscription row means the trial was
+      // already used, so cancel/reactivate can't mint endless free trials.
+      ...(existing ? {} : { subscription_data: { trial_period_days: 14 } }),
       client_reference_id: user.id,
       // Returning customers (canceled, past_due) keep their Stripe customer
       // record; first-timers get one created from their account email.

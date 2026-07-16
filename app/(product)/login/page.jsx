@@ -36,8 +36,13 @@ export default function LoginPage() {
     }
 
     // Full navigation so the fresh session cookie is on the request the
-    // middleware sees.
-    window.location.assign("/app");
+    // middleware sees. Carry ?checkout=success through (the middleware keeps
+    // it on the redirect here) so a payer whose session lapsed during Stripe
+    // Checkout still gets the activation poll instead of the trial gate.
+    const checkout = new URLSearchParams(window.location.search).get("checkout");
+    window.location.assign(
+      checkout ? `/app?checkout=${encodeURIComponent(checkout)}` : "/app"
+    );
   };
 
   return (

@@ -1,6 +1,6 @@
 /* ── Billing ───────────────────────────────────────────────── */
-export const STRIPE_PAYMENT_LINK =
-  "https://buy.stripe.com/4gMbJ1geYbMo6g54do0sU02";
+// Checkout always goes through /api/stripe/checkout (signed-in, carries the
+// user id) — never a raw Payment Link, which can't be attributed to a user.
 export const MONTHLY_PRICE = 20;
 
 /* ── Page constants ────────────────────────────────────────── */

@@ -90,7 +90,7 @@ export default function TrialGate({ status, justCheckedOut }) {
         </h1>
         <p className="mt-2 text-sm text-neutral-400">
           {activationTimedOut
-            ? "Your payment went through, but activation is taking longer than usual. Refresh this page in a minute — no need to check out again."
+            ? "Your checkout finished, but activation is taking longer than usual. Refresh this page in a few minutes — no need to check out again."
             : returning
               ? "Your subscription isn't active. Pick up right where you left off — your data is still here."
               : "Full access to tailored resume generation for 14 days. $20/month after — cancel anytime before day 14 and you won't be charged."}

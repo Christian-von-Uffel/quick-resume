@@ -56,10 +56,38 @@ async function handleCheckoutCompleted(session) {
     return;
   }
 
-  const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
+  const stripe = getStripe();
+  const admin = getSupabaseAdmin();
+
+  // Double-checkout guard: if this user's row already points at a different
+  // subscription (two completable sessions for one account), the upsert below
+  // would orphan it — invisible to the app but still billing. Cancel it before
+  // repointing; done first so a failed upsert retries the whole handler.
+  const { data: existingRow, error: readError } = await admin
+    .from("subscriptions")
+    .select("stripe_subscription_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (readError) throw new Error(`subscriptions read failed: ${readError.message}`);
+
+  const displaced = existingRow?.stripe_subscription_id;
+  if (displaced && displaced !== subscriptionId) {
+    try {
+      const old = await stripe.subscriptions.retrieve(displaced);
+      if (old.status !== "canceled" && old.status !== "incomplete_expired") {
+        await stripe.subscriptions.cancel(displaced);
+        console.warn("canceled displaced subscription", displaced, "replaced by", subscriptionId);
+      }
+    } catch (error) {
+      // Stale pointer (e.g. a test-mode id) — nothing real to cancel.
+      if (error?.code !== "resource_missing") throw error;
+    }
+  }
+
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
   const planId = await resolvePlanId(subscription);
 
-  const { error } = await getSupabaseAdmin()
+  const { error } = await admin
     .from("subscriptions")
     .upsert({ user_id: userId, ...subscriptionRow(subscription, planId) }, { onConflict: "user_id" });
 
@@ -67,11 +95,24 @@ async function handleCheckoutCompleted(session) {
 }
 
 async function handleSubscriptionChanged(subscription) {
-  const planId = await resolvePlanId(subscription);
+  // Never write the event payload's snapshot: a delayed retry of an OLDER
+  // 'updated' event would overwrite newer state — worst case flipping a
+  // canceled subscription back to 'trialing' forever, since Stripe emits no
+  // further events for it. Mirror Stripe's current state instead.
+  let fresh;
+  try {
+    fresh = await getStripe().subscriptions.retrieve(subscription.id);
+  } catch (error) {
+    // Gone from Stripe entirely (e.g. purged test data): nothing to mirror.
+    if (error?.code === "resource_missing") return;
+    throw error;
+  }
+
+  const planId = await resolvePlanId(fresh);
   const { error } = await getSupabaseAdmin()
     .from("subscriptions")
-    .update(subscriptionRow(subscription, planId))
-    .eq("stripe_subscription_id", subscription.id);
+    .update(subscriptionRow(fresh, planId))
+    .eq("stripe_subscription_id", fresh.id);
 
   // No matching row simply means checkout.session.completed hasn't landed
   // yet (or the subscription never belonged to an app user) — safe to skip.
