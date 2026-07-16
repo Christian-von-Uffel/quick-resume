@@ -1,4 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import {
+  CLARITY_REVIEW_STEPS,
+  CLARITY_REWRITE_STEPS,
+  validateClarityReview,
+} from "../lib/clarifyExperience";
+import { PipelineSteps } from "./PipelineSteps";
+
+// How long the prepare step stays visibly active before results land. The
+// validate pass itself is sync, so without this beat React never paints it.
+const PREPARE_STEP_VISIBLE_MS = 450;
 
 // Inline "clarity review" panel for a single work-history position. On open it asks
 // the model which sentences are hard to read; for each it shows a plain question with
@@ -18,15 +29,48 @@ export function ExperienceReview({
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
   const [items, setItems] = useState([]);
+  // Index into CLARITY_REVIEW_STEPS while the initial scan runs (-1 = idle).
+  // On success this stays at steps.length so the completed checklist remains
+  // above the findings (avoids a layout jump from unmounting the list).
+  // Kept on failure so the step list can show WHERE the run died.
+  const [stepIndex, setStepIndex] = useState(0);
+  const [failed, setFailed] = useState(false);
   const cancelledRef = useRef(false);
+  const panelRef = useRef(null);
+
+  // The trigger button lives at the top of a tall position card, so this panel
+  // opens below the fold and the review looks like it did nothing. Pull it into
+  // view on open ("nearest" no-ops when it's already visible, so a card near the
+  // top of the screen doesn't get yanked).
+  useEffect(() => {
+    panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, []);
 
   useEffect(() => {
     cancelledRef.current = false;
+    setStepIndex(0);
+    setFailed(false);
 
     (async () => {
       try {
-        const found = await reviewSentences({ position, description });
+        // Step 1: one LLM call flags the hardest-to-read sentences.
+        const parsed = await reviewSentences({ position, description });
         if (cancelledRef.current) return;
+
+        // Step 2: paint the prepare stage before validating. Without flushSync,
+        // React batches this with the finish and the user never sees it.
+        flushSync(() => {
+          setStepIndex(1);
+        });
+        const found = validateClarityReview(parsed);
+        if (cancelledRef.current) return;
+
+        await new Promise((resolve) => setTimeout(resolve, PREPARE_STEP_VISIBLE_MS));
+        if (cancelledRef.current) return;
+
+        // Leave the checklist mounted with every step checked — hiding it here
+        // would collapse the panel the moment results appear.
+        setStepIndex(CLARITY_REVIEW_STEPS.length);
         setItems(
           found.map((item) => ({
             ...item,
@@ -45,6 +89,8 @@ export function ExperienceReview({
         setStatus(found.length ? "ready" : "empty");
       } catch (err) {
         if (cancelledRef.current) return;
+        // Leave stepIndex where it was so the step list shows which stage failed.
+        setFailed(true);
         setError(err instanceof Error ? err.message : "Could not review this description.");
         setStatus("error");
       }
@@ -124,7 +170,7 @@ export function ExperienceReview({
   };
 
   return (
-    <div className="mt-3 rounded-lg border border-blue-500/40 bg-blue-500/5 p-3">
+    <div ref={panelRef} className="mt-3 scroll-my-24 rounded-lg border border-blue-500/40 bg-blue-500/5 p-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-widest text-blue-600 dark:text-blue-300">
           Clarity review
@@ -138,10 +184,12 @@ export function ExperienceReview({
         </button>
       </div>
 
-      {status === "loading" && (
-        <p className="mt-2 text-sm text-neutral-400">
-          Reading this description for sentences that are hard to understand...
-        </p>
+      {stepIndex >= 0 && (
+        <PipelineSteps
+          steps={CLARITY_REVIEW_STEPS}
+          stepIndex={stepIndex}
+          failed={failed}
+        />
       )}
 
       {status === "error" && (
@@ -162,6 +210,13 @@ export function ExperienceReview({
             // interpretation fetches the rewrite immediately as before.
             const hasSkillOptions = item.skillOptions.length > 0;
             const clarification = item.usingCustom ? item.customAnswer : item.choice ?? "";
+            const rewriteStepIndex =
+              item.proposalStatus === "loading" || item.proposalStatus === "error"
+                ? 0
+                : item.proposalStatus === "ready"
+                  ? CLARITY_REWRITE_STEPS.length
+                  : -1;
+            const rewriteFailed = item.proposalStatus === "error";
 
             return (
             <div
@@ -310,9 +365,11 @@ export function ExperienceReview({
                     </>
                   )}
 
-                  {item.proposalStatus === "loading" && (
-                    <p className="mt-2 text-sm text-neutral-400">Writing a clearer version...</p>
-                  )}
+                  <PipelineSteps
+                    steps={CLARITY_REWRITE_STEPS}
+                    stepIndex={rewriteStepIndex}
+                    failed={rewriteFailed}
+                  />
 
                   {item.proposalStatus === "error" && (
                     <p className="mt-2 text-sm text-red-400">{item.proposalError}</p>

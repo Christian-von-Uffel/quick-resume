@@ -1,3 +1,8 @@
+/* ── Billing ───────────────────────────────────────────────── */
+export const STRIPE_PAYMENT_LINK =
+  "https://buy.stripe.com/4gMbJ1geYbMo6g54do0sU02";
+export const MONTHLY_PRICE = 20;
+
 /* ── Page constants ────────────────────────────────────────── */
 export const PAGE_W = 620;
 export const PAGE_H = Math.round(PAGE_W * (297 / 210));
@@ -7,17 +12,18 @@ export const LH_MIN = 1.15;
 export const LH_MAX = 1.8;
 export const LH_DEFAULT = 1.5;
 export const FS_MAX_DEFAULT = 14;
-export const STORAGE_KEY = "quick-resume:v1";
 export const PROFILE_EXPORT_VERSION = 1;
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_XAI_MODEL = "grok-4.5";
 export const MISTRAL_OCR_MODEL = "mistral-ocr-latest";
 
 export const LLM_PROVIDERS = [
-  ["gemini", "Google"],
-  ["openai", "OpenAI"],
+  ["xai", "xAI"],
   ["anthropic", "Anthropic"],
+  ["openai", "OpenAI"],
+  ["gemini", "Google"],
 ];
 
 export const OPENAI_MODEL_OPTIONS = [
@@ -25,6 +31,11 @@ export const OPENAI_MODEL_OPTIONS = [
   ["gpt-5.4", "gpt-5.4"],
   ["gpt-5.4-mini", "gpt-5.4-mini"],
   ["gpt-5.4-nano", "gpt-5.4-nano"],
+];
+
+export const XAI_MODEL_OPTIONS = [
+  ["grok-4.5", "grok-4.5"],
+  ["grok-4.3", "grok-4.3"],
 ];
 
 export const FALLBACK_MODEL_OPTIONS = {
@@ -40,6 +51,7 @@ export const FALLBACK_MODEL_OPTIONS = {
     ["claude-sonnet-4-6", "claude-sonnet-4-6"],
     ["claude-haiku-4-5", "claude-haiku-4-5"],
   ],
+  xai: XAI_MODEL_OPTIONS,
 };
 
 export const CONTACT_FIELDS = [
@@ -64,18 +76,21 @@ export const DEFAULT_PROFILE = {
   website: "",
   visibleContactFields: DEFAULT_VISIBLE_CONTACT_FIELDS,
   education: [],
+  // Pair-signature keys of work-history date conflicts the person confirmed as
+  // intentional (dual-held jobs, separate stints) so they aren't re-flagged.
+  conflictAcks: [],
 };
 
 export const DEFAULT_LLM_SETTINGS = {
+  // Bundled startup default before the server reports which keys are set.
+  // App load then switches to the first configured provider (xAI → Anthropic →
+  // OpenAI → Google).
   provider: "gemini",
   model: DEFAULT_GEMINI_MODEL,
-  geminiApiKey: "",
-  openaiApiKey: "",
-  anthropicApiKey: "",
-  firecrawlApiKey: "",
-  mistralApiKey: "",
-  rememberApiKey: true,
 };
+
+// Exact phrase the delete-account dialog requires before it will act.
+export const DELETE_ACCOUNT_CONFIRM_PHRASE = "DELETE";
 
 export const MONTH_OPTIONS = [
   "January",

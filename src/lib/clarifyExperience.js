@@ -1,6 +1,19 @@
 import { normalizeStoredList } from "./resumeModel";
 import { cleanFormattedDetail } from "./reviewExperience";
 
+// The stages of the initial clarity scan, in the order the UI reports progress.
+// The LLM call covers step 1; step 2 is the local pass that validates questions
+// and drops anything without pickable interpretations.
+export const CLARITY_REVIEW_STEPS = [
+  { id: "review", label: "Reading this description for sentences that are hard to understand" },
+  { id: "prepare", label: "Preparing clarification questions" },
+];
+
+// Shown while a single flagged sentence is rewritten from the person's answer.
+export const CLARITY_REWRITE_STEPS = [
+  { id: "rewrite", label: "Writing a clearer version of this sentence" },
+];
+
 // Ask the model to flag the work-history sentences that are hardest to read and,
 // for each, pose a plain "what do you mean by this?" question with a few concrete
 // interpretations the person can pick from. The position title is passed only as

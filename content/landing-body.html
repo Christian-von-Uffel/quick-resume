@@ -1,0 +1,594 @@
+
+<!-- ============ NAV ============ -->
+<nav class="nav" id="nav">
+  <div class="container nav-inner">
+    <a class="logo" href="#top">
+      <span class="logo-mark">1</span>
+      <span>resume</span>
+    </a>
+    <div class="nav-links">
+      <a href="#problem">Why 1Resume</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="/login">Sign in</a>
+      <a class="btn btn-primary" href="{{STRIPE_PAYMENT_LINK}}">Start free trial</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero" id="top">
+  <div class="container">
+    <div class="hero-inner">
+      <div class="badge" data-animate><span class="dot"></span>The one-resume-for-everything platform</div>
+      <h1 data-animate style="transition-delay:.05s">The last resume<br>you'll ever <span class="accent">write<svg viewBox="0 0 200 12" preserveAspectRatio="none"><path d="M3 9 Q 50 2 100 7 T 197 5"/></svg></span></h1>
+      <p class="lede" data-animate style="transition-delay:.1s">Write about your experience once. 1Resume reads every job description and builds a tailored, ATS-ready resume from your story — so your most relevant experience always makes the cut.</p>
+      <div class="hero-actions" data-animate style="transition-delay:.15s">
+        <a class="btn btn-primary btn-lg" href="{{STRIPE_PAYMENT_LINK}}">Start your 14-day free trial</a>
+        <a class="btn btn-ghost btn-lg" href="#how">See how it works</a>
+      </div>
+      <p class="cta-note" data-animate style="transition-delay:.2s">Full access for 14 days · Cancel anytime</p>
+    </div>
+
+    <div class="hero-visual" data-animate style="transition-delay:.25s">
+      <div class="hv-grid">
+        <!-- master profile -->
+        <div class="master-card">
+          <div class="mc-head">
+            <div class="mc-avatar">JM</div>
+            <div>
+              <div class="mc-name">Your 1Resume</div>
+              <div class="mc-sub">One living profile · 12 yrs of experience</div>
+            </div>
+          </div>
+          <div class="mc-label">Your experience</div>
+          <div class="chip glow-a"><span class="cdot" style="background:#2D5BE3"></span>Led migration to a new billing system</div>
+          <div class="chip glow-b"><span class="cdot" style="background:#0E9F6E"></span>Managed a team of 6 engineers</div>
+          <div class="chip glow-c"><span class="cdot" style="background:#D97E1A"></span>Grew activation rate 42% in two quarters</div>
+          <div class="chip glow-a"><span class="cdot" style="background:#8B5CF6"></span>Shipped mobile onboarding redesign</div>
+          <div class="chip glow-b"><span class="cdot" style="background:#0EA5E9"></span>Ran quarterly planning with sales &amp; CS</div>
+          <div class="chip glow-c"><span class="cdot" style="background:#E5484D"></span>Built the analytics stack from scratch</div>
+        </div>
+
+        <!-- connectors -->
+        <svg class="hv-connect" viewBox="0 0 100 300" preserveAspectRatio="none" aria-hidden="true">
+          <path id="hvp1" d="M0 150 C 40 150, 55 55, 100 52"/>
+          <path id="hvp2" d="M0 150 C 45 150, 55 150, 100 150"/>
+          <path id="hvp3" d="M0 150 C 40 150, 55 245, 100 248"/>
+          <circle r="4" fill="#2D5BE3">
+            <animateMotion dur="3s" repeatCount="indefinite"><mpath href="#hvp1"/></animateMotion>
+          </circle>
+          <circle r="4" fill="#2D5BE3" opacity=".85">
+            <animateMotion dur="3s" begin="1s" repeatCount="indefinite"><mpath href="#hvp2"/></animateMotion>
+          </circle>
+          <circle r="4" fill="#2D5BE3" opacity=".7">
+            <animateMotion dur="3s" begin="2s" repeatCount="indefinite"><mpath href="#hvp3"/></animateMotion>
+          </circle>
+        </svg>
+
+        <!-- tailored resumes -->
+        <div class="tailored-stack">
+          <div class="job-card active-a">
+            <div class="jc-title">Product Manager · Meridian Health <span class="jc-badge">Tailored</span></div>
+            <div class="jc-bars">
+              <div class="jc-bar hl" style="width:92%"></div>
+              <div class="jc-bar" style="width:78%"></div>
+              <div class="jc-bar hl" style="width:85%"></div>
+            </div>
+          </div>
+          <div class="job-card active-b">
+            <div class="jc-title">Engineering Lead · Atlas Fintech <span class="jc-badge">Tailored</span></div>
+            <div class="jc-bars">
+              <div class="jc-bar" style="width:88%"></div>
+              <div class="jc-bar hl" style="width:95%"></div>
+              <div class="jc-bar hl" style="width:70%"></div>
+            </div>
+          </div>
+          <div class="job-card active-c">
+            <div class="jc-title">Growth PM · Lumen Robotics <span class="jc-badge">Tailored</span></div>
+            <div class="jc-bars">
+              <div class="jc-bar hl" style="width:90%"></div>
+              <div class="jc-bar hl" style="width:82%"></div>
+              <div class="jc-bar" style="width:75%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- stats strip -->
+  <div class="stats-strip">
+    <div class="container stats-inner">
+      <div class="stat" data-animate><b>1</b><span>profile to maintain</span></div>
+      <div class="stat" data-animate style="transition-delay:.08s"><b>&infin;</b><span>tailored resumes</span></div>
+      <div class="stat" data-animate style="transition-delay:.16s"><b>0</b><span>blank-page rewrites</span></div>
+      <div class="stat" data-animate style="transition-delay:.24s"><b>100%</b><span>your real experience</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ OLD WAY vs NEW WAY ============ -->
+<section id="problem">
+  <div class="container">
+    <div class="sec-head" data-animate>
+      <span class="eyebrow">The problem</span>
+      <h2>Editing your resume is the wrong job</h2>
+      <p class="lede">The old way asks you to guess what a hiring manager wants, then wrestle a document until it fits. The best evidence for the role often never makes it onto the page — because you didn't think of it while editing.</p>
+    </div>
+
+    <div class="ways">
+      <!-- OLD WAY -->
+      <div class="way way-old" data-animate>
+        <span class="way-tag">✕&nbsp; The old way</span>
+        <h3>Edit. Squint. Repeat.</h3>
+
+        <div class="mock-window" aria-hidden="true">
+          <div class="mw-bar">
+            <div class="mw-dots"><i></i><i></i><i></i></div>
+            <div class="mw-title">📄 resume_FINAL_v7_edited (2).docx</div>
+          </div>
+          <div class="mw-body">
+            <div class="doc-line w-40" style="background:#C9D3E8"></div>
+            <div class="doc-line w-90"></div>
+            <div class="doc-line w-75 struck"></div>
+            <div class="type-wrap"><span class="type-line">Responsible for <span class="squiggle">various synergies</span>…</span></div>
+            <div class="doc-line w-80"></div>
+            <div class="doc-line w-60"></div>
+          </div>
+          <div class="file-pile">
+            <span class="file-chip">resume_v1.docx</span>
+            <span class="file-chip">resume_v2_final.docx</span>
+            <span class="file-chip">resume_FINAL.docx</span>
+            <span class="file-chip">resume_FINAL_v2.docx</span>
+            <span class="file-chip">resume_FINAL_v7_edited (2).docx</span>
+          </div>
+        </div>
+
+        <ul class="way-list">
+          <li><span class="ic">✕</span>Start from last year's resume and hope it's close enough</li>
+          <li><span class="ic">✕</span>Guess which parts of your experience this role cares about</li>
+          <li><span class="ic">✕</span>Forget your most relevant work — because it wasn't already on the page</li>
+          <li><span class="ic">✕</span>End up with seven "final" versions and no idea what changed</li>
+        </ul>
+      </div>
+
+      <!-- NEW WAY -->
+      <div class="way way-new" data-animate style="transition-delay:.12s">
+        <span class="way-tag">✓&nbsp; The 1Resume way</span>
+        <h3>Tell your story once. Let AI build the rest.</h3>
+
+        <div class="pipeline" aria-hidden="true">
+          <div class="pipe-row">
+            <div class="pipe-card">
+              <div class="pc-label">✍️ Your story</div>
+              <div class="story-line picked">Rebuilt onboarding — activation +42%</div>
+              <div class="story-line">Mentored two junior designers</div>
+              <div class="story-line picked2">Led HIPAA compliance project</div>
+            </div>
+            <div class="pipe-arrow pa-h"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></div>
+            <div class="pipe-card">
+              <div class="pc-label">📋 Job description</div>
+              <div class="jd-line" style="width:60%"></div>
+              <div class="jd-line hl" style="width:92%"></div>
+              <div class="jd-line" style="width:75%"></div>
+              <div class="jd-line hl" style="width:84%"></div>
+              <div class="jd-line" style="width:50%"></div>
+            </div>
+          </div>
+          <div class="pipe-row">
+            <div class="pipe-spacer"></div>
+            <div class="pipe-spacer"></div>
+            <div class="pipe-out-stack">
+              <div class="pipe-arrow pa-v"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></div>
+              <div class="resume-out">
+                <div class="pc-label">📄 Resume Generation</div>
+                <div class="ro-sub"></div>
+                <div class="ro-slot s1" style="width:95%"></div>
+                <div class="ro-slot s2" style="width:82%"></div>
+                <div class="ro-slot s3" style="width:90%"></div>
+                <div class="ro-slot s4" style="width:70%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <ul class="way-list">
+          <li><span class="ic">✓</span><span>Write about what you accomplished, the skills you used, and who you worked with</span></li>
+          <li><span class="ic">✓</span><span>AI analyzes the job description and finds what the role actually needs</span></li>
+          <li><span class="ic">✓</span><span>The strongest evidence from your <em>whole</em> history makes the resume — even details you'd forgotten</span></li>
+          <li><span class="ic">✓</span><span>Every application gets a resume built for it, not edited toward it</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HOW IT WORKS ============ -->
+<section class="soft" id="how">
+  <div class="container">
+    <div class="sec-head" data-animate>
+      <span class="eyebrow">How it works</span>
+      <h2>Three steps. One resume. Every job.</h2>
+      <p class="lede">You never start from a blank page — and you never edit a document again.</p>
+    </div>
+    <div class="steps">
+      <div class="step-card" data-animate>
+        <div class="step-num">1</div>
+        <span class="step-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span>
+        <h3>Tell your story</h3>
+        <p>Write about your experience in plain language — what you accomplished, the skills you used, and who you worked with. No formatting, no bullet-point anxiety. Just the truth of what you did.</p>
+      </div>
+      <div class="step-card" data-animate style="transition-delay:.1s">
+        <div class="step-num">2</div>
+        <span class="step-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
+        <h3>Paste the job description</h3>
+        <p>1Resume analyzes what the role needs, helps you surface experience details you can include, and selects the best evidence from your story to address the needs of the role.</p>
+      </div>
+      <div class="step-card" data-animate style="transition-delay:.2s">
+        <div class="step-num">3</div>
+        <span class="step-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>
+        <h3>Download your PDF</h3>
+        <p>Get a polished, ATS-friendly PDF resume tailored to that exact role — ready to send. Apply to the next job? Paste the next description. Your story stays put.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section id="features" style="padding-bottom:40px">
+  <div class="container">
+    <div class="sec-head" data-animate>
+      <span class="eyebrow">Everything your story deserves</span>
+      <h2>Built around your experience,<br>not around a document</h2>
+      <p class="lede">Every feature exists to get the truth of what you've done onto the page — clearly, completely, and tailored to the role in front of you.</p>
+    </div>
+
+    <!-- Feature 1: Timeline -->
+    <div class="feature">
+      <div class="f-copy" data-animate>
+        <span class="eyebrow">Work history timeline</span>
+        <h3>See your whole career at a glance</h3>
+        <p>Your experience lives on a timeline, not in a document. Add roles as you remember them, watch your history take shape, and instantly spot what's thin or missing.</p>
+        <ul class="f-points">
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>A guided view that helps you fill out each role's details</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Gaps and thin spots are flagged so nothing surprises you in an interview</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>One source of truth for your entire work history</li>
+        </ul>
+      </div>
+      <div class="f-visual" data-animate style="transition-delay:.12s">
+        <div class="f-frame">
+          <div class="tl" aria-hidden="true">
+            <div class="tl-item">
+              <div class="tl-role">Senior Product Manager · Novara Health</div>
+              <div class="tl-meta">2022 — Present · 9 details captured</div>
+              <div class="tl-fill"><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-role">Product Manager · DataCore</div>
+              <div class="tl-meta">2019 — 2022 · 6 details captured</div>
+              <div class="tl-fill"><i></i><i></i><i></i><i></i><i class="empty"></i></div>
+            </div>
+            <div class="tl-item tl-gap">
+              <div class="tl-role">2018 — 2019 · Gap detected</div>
+              <div class="tl-meta">What were you doing here?</div>
+              <div class="tl-bubble">✍️ Add this chapter →</div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-role">Business Analyst · Fieldstone</div>
+              <div class="tl-meta">2014 — 2018 · 8 details captured</div>
+              <div class="tl-fill"><i></i><i></i><i></i><i class="empty"></i><i class="empty"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 2: Import & merge -->
+    <div class="feature flip">
+      <div class="f-copy" data-animate>
+        <span class="eyebrow">Smart import &amp; merge</span>
+        <h3>Bring in every resume you've ever written</h3>
+        <p>Import multiple resumes — old versions, tailored one-offs, that PDF from 2019. 1Resume smartly merges everything into your one profile.</p>
+        <p>When two versions disagree, we don't guess. The app shows you the conflict and asks you to confirm which details are correct.</p>
+        <ul class="f-points">
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Upload as many resumes as you have — duplicates merge automatically</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Conflicting titles, dates, or details? You confirm what's true</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Years of scattered versions become one living profile</li>
+        </ul>
+      </div>
+      <div class="f-visual" data-animate style="transition-delay:.12s">
+        <div class="f-frame">
+          <div class="merge-top" aria-hidden="true">
+            <div class="mini-docs">
+              <div class="mini-doc slide-l"><div class="md-title">resume_2021.pdf</div><i style="width:90%"></i><i style="width:70%"></i><i style="width:80%"></i><i style="width:55%"></i></div>
+              <div class="mini-doc slide-r"><div class="md-title">resume_v7.docx</div><i style="width:85%"></i><i style="width:60%"></i><i style="width:75%"></i><i style="width:65%"></i></div>
+            </div>
+            <div class="merge-arrow"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></div>
+            <div class="merged-card">
+              <div class="mg-title"><span class="mg-check">✓</span>Your 1Resume profile</div>
+              <i style="width:92%"></i><i style="width:78%"></i><i style="width:85%"></i>
+            </div>
+          </div>
+          <div class="conflict" aria-hidden="true">
+            <div class="cf-title"><span class="cf-icon">!</span>We found two versions of this detail</div>
+            <div class="cf-q">Your title at DataCore — which is correct?</div>
+            <div class="cf-opt a"><span class="cf-radio"></span>Product Manager <span class="src">resume_2021.pdf</span></div>
+            <div class="cf-opt"><span class="cf-radio"></span>Associate Product Manager <span class="src">resume_v7.docx</span></div>
+            <button class="cf-confirm" tabindex="-1">Confirm</button>
+            <div class="cf-toast">✓&nbsp; Saved to your profile</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 3: Clarity reviews -->
+    <div class="feature">
+      <div class="f-copy" data-animate>
+        <span class="eyebrow">Clarity reviews</span>
+        <h3>Say what you actually meant</h3>
+        <p>Vague or clunky wording buries good work. 1Resume spots unclear phrasing, asks what you were trying to say, and offers options to pin down your intent.</p>
+        <p>Based on your answer, we recommend improved phrasing — which you can accept or reject. Accept it, and the old phrase is swapped out on the spot. You stay in control of every word.</p>
+        <ul class="f-points">
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Unclear wording → identify intent → a clearer rewrite</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Every suggestion is accept-or-reject — nothing changes without you</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Your voice, sharpened — never replaced</li>
+        </ul>
+      </div>
+      <div class="f-visual" data-animate style="transition-delay:.12s">
+        <div class="f-frame">
+          <div class="cl-stage" id="clarityDemo">
+            <div class="cl-bullet" id="clBullet"><span id="clText">"Responsible for various data-related initiatives across multiple teams"</span><span class="cl-flag" id="clFlag">Needs clarity</span></div>
+            <div class="cl-q"><span class="ai-dot">✦</span>What were you trying to say?</div>
+            <div class="cl-opts" id="clOpts">
+              <button class="cl-opt" data-opt="1"><b>Option 1</b>I built dashboards and reports other teams relied on</button>
+              <button class="cl-opt" data-opt="2"><b>Option 2</b>I led cross-team data projects end to end</button>
+              <button class="cl-opt" data-opt="3"><b>Option 3</b>I cleaned up and maintained our data pipelines</button>
+              <button class="cl-opt" data-opt="other"><b>Other</b>Let me describe it myself…</button>
+            </div>
+            <div class="cl-rewrite" id="clRewrite">
+              <div class="cl-rw-label">✦ Suggested phrasing</div>
+              <div class="cl-rw-text" id="clRwText">"Led end-to-end data projects across 4 teams, from scoping to delivery"</div>
+              <div class="cl-rw-actions">
+                <button class="cl-accept" id="clAccept">✓ Accept</button>
+                <button class="cl-reject" id="clReject">Reject</button>
+              </div>
+            </div>
+            <button class="cl-reset" id="clReset">↺ &nbsp;Run the demo again</button>
+            <div class="cl-hint" id="clHint">This demo is interactive — try picking an option.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 4: Experience gap review -->
+    <div class="feature flip">
+      <div class="f-copy" data-animate>
+        <span class="eyebrow">Experience gap review</span>
+        <h3>Qualified? Prove it — before you apply.</h3>
+        <p>Sometimes you're fully qualified for a role. You just haven't put the evidence on your resume.</p>
+        <p>Before your resume gets created, 1Resume checks your story against the job's requirements and the objections a hiring manager might raise — then helps you fill in the work experience details that address them.</p>
+        <ul class="f-points">
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Requirements checked against your entire history — not just what's on the page</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Hiring-manager objections surfaced while you can still fix them</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Add the missing evidence — and watch your match score climb</li>
+        </ul>
+      </div>
+      <div class="f-visual" data-animate style="transition-delay:.12s">
+        <div class="f-frame" id="gapDemo">
+          <div class="gap-head">
+            <div>
+              <div class="gap-title">Match report</div>
+              <div class="gap-sub">Senior PM · Meridian Health</div>
+            </div>
+            <div class="score-ring">
+              <svg width="74" height="74" viewBox="0 0 74 74">
+                <circle class="bgc" cx="37" cy="37" r="30"/>
+                <circle class="fgc" id="gapRing" cx="37" cy="37" r="30" stroke-dasharray="188.5" stroke-dashoffset="60.3"/>
+              </svg>
+              <div class="score-num" id="gapScore">68%</div>
+            </div>
+          </div>
+          <div class="req ok"><span class="st">✓</span>5+ years product management</div>
+          <div class="req ok"><span class="st">✓</span>Cross-functional leadership</div>
+          <div class="req warn" id="gapReq1"><span class="st">!</span>Healthcare or regulated industry<span class="fix">add evidence</span></div>
+          <div class="req warn" id="gapReq2"><span class="st">!</span>Comfort with SQL &amp; analytics<span class="fix">add evidence</span></div>
+          <div class="gap-prompt" id="gapPrompt">
+            <span id="gapPromptText">You mentioned leading the <b>HIPAA compliance project</b> at Novara — that's healthcare experience. Add it to this resume?</span><br>
+            <button class="gp-btn" tabindex="-1">＋ Add to resume</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 5: PDF download -->
+    <div class="feature">
+      <div class="f-copy" data-animate>
+        <span class="eyebrow">The finished product</span>
+        <h3>A polished PDF, ready to send</h3>
+        <p>Every tailored resume exports as a clean, professionally formatted PDF that recruiters — and applicant tracking systems — can actually read.</p>
+        <ul class="f-points">
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>ATS-friendly formatting that parses cleanly every time</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Download in one click, tailored to the job you're applying for</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Need another version? Paste the next job description — done</li>
+        </ul>
+      </div>
+      <div class="f-visual" data-animate style="transition-delay:.12s">
+        <div class="pdf-stage" aria-hidden="true">
+          <div class="resume-doc">
+            <div class="rd-name">Jordan Meyer</div>
+            <div class="rd-role">Senior Product Manager</div>
+            <div class="rd-sec">Experience</div>
+            <div class="rd-line" style="width:95%"></div>
+            <div class="rd-line" style="width:88%"></div>
+            <div class="rd-line" style="width:92%"></div>
+            <div class="rd-sec">Selected for this role</div>
+            <div class="rd-line" style="width:90%;background:var(--blue-100)"></div>
+            <div class="rd-line" style="width:82%;background:var(--blue-100)"></div>
+            <div class="rd-sec">Skills</div>
+            <div class="rd-line" style="width:70%"></div>
+            <div class="rd-line" style="width:55%"></div>
+          </div>
+          <div class="pdf-chip"><span class="ok">✓</span> Passes ATS parsing</div>
+          <button class="pdf-dl" tabindex="-1">Download PDF <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ COMPARE ============ -->
+<section class="soft">
+  <div class="container">
+    <div class="sec-head" data-animate>
+      <span class="eyebrow">Side by side</span>
+      <h2>Stop editing. Start building.</h2>
+    </div>
+    <div class="cmp" data-animate>
+      <div class="cmp-row cmp-head">
+        <div class="cmp-cell label"></div>
+        <div class="cmp-cell old">The old way</div>
+        <div class="cmp-cell new">With 1Resume</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-cell label">Starting point</div>
+        <div class="cmp-cell old"><span class="mini-x">✕</span>Last year's resume</div>
+        <div class="cmp-cell new"><span class="mini-c">✓</span>Your full story, told once</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-cell label">Tailoring per job</div>
+        <div class="cmp-cell old"><span class="mini-x">✕</span>Manual edits, every single time</div>
+        <div class="cmp-cell new"><span class="mini-c">✓</span>AI selects the best evidence for each job description</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-cell label">Relevant experience</div>
+        <div class="cmp-cell old"><span class="mini-x">✕</span>Whatever you remember under deadline</div>
+        <div class="cmp-cell new"><span class="mini-c">✓</span>Surfaced from your entire history</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-cell label">Unclear wording</div>
+        <div class="cmp-cell old"><span class="mini-x">✕</span>You, staring at a sentence at 11pm</div>
+        <div class="cmp-cell new"><span class="mini-c">✓</span>Clarity reviews with rewrites you approve</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-cell label">Missing requirements</div>
+        <div class="cmp-cell old"><span class="mini-x">✕</span>Discovered in a rejection email</div>
+        <div class="cmp-cell new"><span class="mini-c">✓</span>Flagged and fixed before you apply</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-cell label">The output</div>
+        <div class="cmp-cell old"><span class="mini-x">✕</span>resume_FINAL_v8.docx</div>
+        <div class="cmp-cell new"><span class="mini-c">✓</span>A tailored, ATS-ready PDF</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PRICING ============ -->
+<section id="pricing">
+  <div class="container">
+    <div class="sec-head" data-animate>
+      <span class="eyebrow">Pricing</span>
+      <h2>One plan. Everything included.</h2>
+      <p class="lede">Try everything free for 14 days. If 1Resume isn't the last resume you'll ever write, cancel in two clicks.</p>
+    </div>
+    <div class="pricing-wrap" data-animate>
+      <div class="price-card">
+        <div class="plan-name">1Resume · Everything</div>
+        <div class="price">${{MONTHLY_PRICE}}<small>/month</small></div>
+        <div class="price-sub">after your 14-day free trial</div>
+
+        <div class="trial-strip" aria-hidden="true">
+          <div class="ts-step"><span class="ts-dot"></span><b>Today</b>Full access, every feature</div>
+          <div class="ts-step"><span class="ts-dot"></span><b>Day 12</b>We email you a reminder</div>
+          <div class="ts-step end"><span class="ts-dot"></span><b>Day 14</b>Keep it, or cancel free</div>
+        </div>
+
+        <ul class="price-feats">
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>A tailored resume for every application — built for even the busiest job search</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>One living profile with your full work-history timeline</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Import &amp; smart-merge all your old resumes</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>Clarity reviews &amp; experience gap reviews</li>
+          <li><span class="tick"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m2 6.5 2.6 2.6L10 3.5"/></svg></span>ATS-friendly PDF downloads</li>
+        </ul>
+
+        <a class="btn btn-primary btn-lg" href="{{STRIPE_PAYMENT_LINK}}">Start your 14-day free trial</a>
+        <p class="price-note">Renews at ${{MONTHLY_PRICE}}/month after the trial. Cancel anytime before day 14 and you won't be charged.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section class="soft" id="faq" style="padding-top:80px">
+  <div class="container">
+    <div class="sec-head" data-animate>
+      <span class="eyebrow">FAQ</span>
+      <h2>Questions, answered</h2>
+    </div>
+    <div class="faq-list" data-animate>
+      <details class="faq-item">
+        <summary>Is it really just one resume?<span class="pm">＋</span></summary>
+        <div class="faq-body">Yes — one profile, maintained in one place. You keep a single living record of your experience, and 1Resume generates a distinct, tailored resume from it for every job you apply to. You never fork versions or lose track of edits again.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Will the AI make things up about me?<span class="pm">＋</span></summary>
+        <div class="faq-body">No. 1Resume only selects and uses work experience you've already confirmed you have. It decides what's most relevant for a given role — it never invents experience.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Can I import my existing resumes?<span class="pm">＋</span></summary>
+        <div class="faq-body">Yes — import as many as you like. 1Resume smartly merges them into your one profile, and when two versions conflict (a different job title, a different date range), the app asks you to confirm which details are correct instead of guessing.</div>
+      </details>
+      <details class="faq-item">
+        <summary>What if I'm missing a requirement for a job?<span class="pm">＋</span></summary>
+        <div class="faq-body">That's exactly what the experience gap review is for. Before your resume is created, 1Resume compares the job's requirements against your full story and flags where evidence is missing. Often you already have the experience — it just isn't written down yet. We prompt you to add it, then include it where it counts.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Is the PDF ATS-friendly?<span class="pm">＋</span></summary>
+        <div class="faq-body">Yes. Every resume exports as a cleanly structured PDF designed to parse correctly in applicant tracking systems, so your application is judged on your experience — not your formatting.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Is there a limit on how many resumes I can create?<span class="pm">＋</span></summary>
+        <div class="faq-body">Apply to as many roles as you like. Daily usage limits apply.</div>
+      </details>
+      <details class="faq-item">
+        <summary>What happens after the 14-day trial?<span class="pm">＋</span></summary>
+        <div class="faq-body">Your trial converts to a paid plan at ${{MONTHLY_PRICE}}/month on day 15. We'll email you a reminder two days before. Cancel anytime before then — in two clicks, no phone calls — and you won't be charged a cent.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FINAL CTA ============ -->
+<section class="final-cta">
+  <div class="container-narrow">
+    <span class="final-logo" data-animate><span class="logo-mark">1</span></span>
+    <h2 data-animate style="transition-delay:.05s">Write your story once.<br>Never rewrite your resume again.</h2>
+    <p class="lede" data-animate style="transition-delay:.1s">Every job application deserves a resume built for it. Yours can have one — without you touching a document.</p>
+    <div data-animate style="transition-delay:.15s">
+      <a class="btn btn-white btn-lg" href="{{STRIPE_PAYMENT_LINK}}">Start your 14-day free trial</a>
+      <p class="cta-note">Full access for 14 days · Renews at ${{MONTHLY_PRICE}}/month · Cancel anytime</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <a class="logo" href="#top"><span class="logo-mark">1</span><span>resume</span></a>
+    <div class="footer-links">
+      <a href="#problem">Why 1Resume</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="footer-copy">© 2026 1Resume. The one-resume-for-everything platform.</div>
+  </div>
+</footer>
+

@@ -1,10 +1,30 @@
 import { describe, it, expect } from "vitest";
 import {
+  CLARITY_REVIEW_STEPS,
+  CLARITY_REWRITE_STEPS,
   validateClarityReview,
   replaceSentence,
   cleanSuggestedSentence,
   buildClaritySuggestionPrompt,
 } from "./clarifyExperience";
+
+describe("CLARITY_REVIEW_STEPS", () => {
+  it("lists the initial scan stages in order", () => {
+    expect(CLARITY_REVIEW_STEPS.map((step) => step.id)).toEqual(["review", "prepare"]);
+    for (const step of CLARITY_REVIEW_STEPS) {
+      expect(step.label.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("CLARITY_REWRITE_STEPS", () => {
+  it("lists the per-sentence rewrite stage", () => {
+    expect(CLARITY_REWRITE_STEPS.map((step) => step.id)).toEqual(["rewrite"]);
+    for (const step of CLARITY_REWRITE_STEPS) {
+      expect(step.label.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("validateClarityReview", () => {
   it("keeps well-formed items and assigns stable ids", () => {

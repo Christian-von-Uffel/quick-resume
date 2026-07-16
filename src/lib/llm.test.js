@@ -1,30 +1,35 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   describeLlmApiError,
   sanitizeApiKey,
+  requireServerApiKey,
+  getPreferredLlmProvider,
   omitSessionRejectedParams,
   rememberSessionRejectedParam,
-} from "./llm";
+} from "./server/llmProviders";
+import { normalizeLlmSettings, getDefaultModelForProvider } from "./llm";
 
 // Messages below mirror what the providers actually return, so the classifier
 // is tested against real-world shapes rather than idealized ones.
 describe("describeLlmApiError", () => {
   it("flags a bad Gemini key even though Gemini reports it as HTTP 400", () => {
     const message = describeLlmApiError("Gemini", 400, "API key not valid. Please pass a valid API key.");
-    expect(message).toMatch(/rejected your API key/i);
-    expect(message).toMatch(/Settings/);
+    expect(message).toMatch(/rejected the server's API key/i);
+    expect(message).toContain("GEMINI_API_KEY");
     expect(message).toContain("API key not valid");
   });
 
   it("flags a bad OpenAI key on HTTP 401", () => {
     const message = describeLlmApiError("OpenAI", 401, "Incorrect API key provided: sk-abc***.");
-    expect(message).toMatch(/rejected your API key/i);
+    expect(message).toMatch(/rejected the server's API key/i);
+    expect(message).toContain("OPENAI_API_KEY");
     expect(message).toContain("HTTP 401");
   });
 
   it("flags a bad Anthropic key on HTTP 401", () => {
     const message = describeLlmApiError("Anthropic", 401, "invalid x-api-key");
-    expect(message).toMatch(/rejected your API key/i);
+    expect(message).toMatch(/rejected the server's API key/i);
+    expect(message).toContain("ANTHROPIC_API_KEY");
   });
 
   it("flags Anthropic's empty credit balance, reported as HTTP 400", () => {
@@ -90,6 +95,63 @@ describe("describeLlmApiError", () => {
   });
 });
 
+describe("requireServerApiKey", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns the sanitized env value when it is set", () => {
+    vi.stubEnv("GEMINI_API_KEY", " AIza-key\n");
+    expect(requireServerApiKey("Gemini")).toBe("AIza-key");
+  });
+
+  it("names the missing env var so the operator knows what to fix", () => {
+    vi.stubEnv("MISTRAL_API_KEY", "");
+    expect(() => requireServerApiKey("Mistral")).toThrowError(/MISTRAL_API_KEY isn't set/);
+    try {
+      requireServerApiKey("Mistral");
+    } catch (error) {
+      expect(error.status).toBe(503);
+    }
+  });
+});
+
+describe("getPreferredLlmProvider", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("prefers xAI when its key is set, even if Gemini is also set", () => {
+    vi.stubEnv("XAI_API_KEY", "xai-key");
+    vi.stubEnv("GEMINI_API_KEY", "gemini-key");
+    expect(getPreferredLlmProvider()).toBe("xai");
+  });
+
+  it("falls through xAI → Anthropic → OpenAI → Google", () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("GEMINI_API_KEY", "gemini-key");
+    expect(getPreferredLlmProvider()).toBe("openai");
+  });
+
+  it("uses Google when no higher-priority key is set", () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("GEMINI_API_KEY", "gemini-key");
+    expect(getPreferredLlmProvider()).toBe("gemini");
+  });
+
+  it("falls back to Google when no chat provider keys are set", () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("GEMINI_API_KEY", "");
+    expect(getPreferredLlmProvider()).toBe("gemini");
+  });
+});
+
 // Each test uses its own memo key: the memo is module-level session state, and
 // unique keys keep tests independent without a reset hook.
 describe("session rejected-param memo", () => {
@@ -125,11 +187,69 @@ describe("session rejected-param memo", () => {
 
 describe("sanitizeApiKey", () => {
   it("strips non-ASCII characters that would make fetch reject the header", () => {
-    expect(sanitizeApiKey("​AIza-key  ")).toBe("AIza-key");
+    expect(sanitizeApiKey("​AIza-key  ")).toBe("AIza-key");
   });
 
   it("handles null and undefined", () => {
     expect(sanitizeApiKey(null)).toBe("");
     expect(sanitizeApiKey(undefined)).toBe("");
+  });
+});
+
+describe("normalizeLlmSettings", () => {
+  it("keeps a valid provider and model", () => {
+    expect(normalizeLlmSettings({ provider: "anthropic", model: "claude-haiku-4-5" })).toEqual({
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
+    });
+  });
+
+  it("drops legacy stored API-key fields so they leave persisted state", () => {
+    const normalized = normalizeLlmSettings({
+      provider: "openai",
+      model: "gpt-5.5",
+      openaiApiKey: "sk-legacy",
+      firecrawlApiKey: "fc-legacy",
+      rememberApiKey: true,
+    });
+
+    expect(normalized).toEqual({ provider: "openai", model: "gpt-5.5" });
+  });
+
+  it("keeps a valid xAI provider and model", () => {
+    expect(normalizeLlmSettings({ provider: "xai", model: "grok-4.5" })).toEqual({
+      provider: "xai",
+      model: "grok-4.5",
+    });
+  });
+
+  it("falls back to defaults for unknown providers and models", () => {
+    expect(normalizeLlmSettings({ provider: "aol", model: "clippy-9000" })).toEqual({
+      provider: "gemini",
+      model: "gemini-3.5-flash",
+    });
+  });
+});
+
+describe("getDefaultModelForProvider", () => {
+  it("prefers the named xAI default even when it is not first in the live list", () => {
+    const live = {
+      xai: [
+        ["grok-4.20-0309-non-reasoning", "grok-4.20-0309-non-reasoning"],
+        ["grok-4.3", "grok-4.3"],
+        ["grok-4.5", "grok-4.5"],
+      ],
+    };
+    expect(getDefaultModelForProvider("xai", live)).toBe("grok-4.5");
+  });
+
+  it("falls back to the first option when the preferred model is missing", () => {
+    const live = {
+      xai: [
+        ["grok-4.20-0309-non-reasoning", "grok-4.20-0309-non-reasoning"],
+        ["grok-4.3", "grok-4.3"],
+      ],
+    };
+    expect(getDefaultModelForProvider("xai", live)).toBe("grok-4.20-0309-non-reasoning");
   });
 });

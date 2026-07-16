@@ -353,6 +353,7 @@ export function normalizeProfile(value) {
     ...DEFAULT_PROFILE,
     ...(value && typeof value === "object" ? value : {}),
     visibleContactFields: normalizeStoredList(value?.visibleContactFields, DEFAULT_VISIBLE_CONTACT_FIELDS),
+    conflictAcks: normalizeStoredList(value?.conflictAcks, []),
     education: sortEducation(
       normalizeStoredList(value?.education, []).map(normalizeEducationItem)
     ),
@@ -431,9 +432,17 @@ export function normalizeResume(value, index = 0) {
   };
 }
 
+export function sortResumes(items) {
+  return [...items].sort((a, b) => {
+    const aTime = Date.parse(a?.updatedAt || "") || 0;
+    const bTime = Date.parse(b?.updatedAt || "") || 0;
+    return bTime - aTime;
+  });
+}
+
 export function normalizeResumeList(value) {
   const source = Array.isArray(value) && value.length > 0 ? value : INITIAL_RESUMES;
-  const normalized = source.map(normalizeResume);
+  const normalized = sortResumes(source.map(normalizeResume));
 
   return normalized.length > 0 ? normalized : INITIAL_RESUMES;
 }

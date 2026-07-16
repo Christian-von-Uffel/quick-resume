@@ -15,11 +15,13 @@ import {
   DEFAULT_VISIBLE_CONTACT_FIELDS,
   MONTH_SELECT_OPTIONS,
   EMPTY_POSITION_DRAFT,
+  DELETE_ACCOUNT_CONFIRM_PHRASE,
 } from "./lib/constants";
 import { readFileAsText, readFileAsBase64, downloadJsonFile } from "./lib/fileUtils";
 import {
   sortWorkHistory,
   sortEducation,
+  sortResumes,
   normalizeWorkMonth,
   normalizeWorkYear,
   normalizeWorkHistoryItem,
@@ -33,7 +35,6 @@ import {
   getUniqueResumeName,
   titleResume,
   titleGeneratedResume,
-  mergeWorkHistory,
   mergeEducation,
   getVisibleContactLine,
   buildResumeExportName,
@@ -41,16 +42,17 @@ import {
   splitDescriptionIntoDetails,
   normalizeDetailForComparison,
 } from "./lib/resumeModel";
-import { loadStoredAppState, saveStoredAppState } from "./lib/storage";
+import { createClient } from "./lib/supabase/client";
+import { syncAppStateToDb, deleteUserData } from "./lib/syncProfile";
 import {
   getDefaultModelForProvider,
   fetchProviderModelOptions,
-  sanitizeApiKey,
-  applyApiKeyDrafts,
+  fetchPreferredLlmProvider,
   normalizeLlmSettings,
   callLlm,
   callLlmForJson,
   callMistralOcr,
+  scrapeJobPage,
 } from "./lib/llm";
 import { parseMarkdown, measureBlocks, layoutBlocks, findOptimalFit } from "./lib/markdownLayout";
 import {
@@ -66,9 +68,19 @@ import {
   collapseBlankLines,
 } from "./lib/generateResume";
 import { summarizeCoverage, getRoleInterval, formatMonthSpan } from "./lib/workHistoryTimeline";
+import {
+  detectPositionConflicts,
+  applyDuplicateMerge,
+  applyBoundaryFix,
+  collectConflictKeys,
+  mergeImportedWorkHistory,
+} from "./lib/positionReview";
 import { WorkHistoryTimeline } from "./components/WorkHistoryTimeline";
+import { PositionReviewPrompt, PositionReviewDialog } from "./components/PositionReview";
+import { AccountSection } from "./components/AccountSection";
 import { ExperienceReview } from "./components/ExperienceReview";
 import { EnrichExperience } from "./components/EnrichExperience";
+import { PipelineSteps } from "./components/PipelineSteps";
 import { importResume, coerceImportedProfile, needsMistralOcr, resolveImportMimeType } from "./lib/importResume";
 import {
   buildMissingExperienceReviewPrompt,
@@ -80,18 +92,18 @@ import {
 } from "./lib/reviewExperience";
 import {
   buildClarityReviewPrompt,
-  validateClarityReview,
   buildClaritySuggestionPrompt,
   cleanSuggestedSentence,
   replaceSentence,
 } from "./lib/clarifyExperience";
 import {
-  buildResponsibilityMapPrompt,
-  validateResponsibilityMap,
-  buildDrilldownPrompt,
-  validateDrilldownQuestions,
-  buildEnrichedBulletPrompt,
-  cleanEnrichedBullet,
+  buildOpeningQuestionsPrompt,
+  validateOpeningQuestions,
+  buildFollowupQuestionsPrompt,
+  validateFollowupQuestions,
+  buildComposePrompt,
+  validateComposedBullets,
+  MAX_QA_ROUNDS,
   appendDetailToDescription,
   isSparseDescription,
 } from "./lib/enrichExperience";
@@ -99,83 +111,50 @@ import { buildProfileExportPayload } from "./lib/exportProfile";
 import { parseProfileExportFile } from "./lib/importProfile";
 import { printResumePage } from "./lib/exportPdf";
 
-/* ── Component ─────────────────────────────────────────────── */
-// Live progress for a multi-stage pipeline run: done steps get a check, the
-// active step pulses (or shows where the run died on failure), pending steps
-// stay dim. stepIndex is -1 when idle, which renders nothing.
-function PipelineSteps({ steps, stepIndex, failed }) {
-  if (stepIndex < 0) return null;
-  return (
-    <ol className="mt-3 space-y-1.5 text-sm" aria-live="polite">
-      {steps.map((step, index) => {
-        const isDone = index < stepIndex;
-        const isActive = index === stepIndex;
-        const failedHere = isActive && failed;
-        return (
-          <li
-            key={step.id}
-            className={`flex items-center gap-2 ${
-              failedHere
-                ? "text-red-400"
-                : isActive
-                  ? "text-amber-700 dark:text-amber-200"
-                  : isDone
-                    ? "text-neutral-400"
-                    : "text-neutral-600"
-            }`}
-          >
-            <span aria-hidden="true" className="w-4 text-center">
-              {failedHere ? "✕" : isDone ? "✓" : isActive ? <span className="inline-block animate-pulse">●</span> : "○"}
-            </span>
-            {step.label}
-            {isActive && !failed ? "…" : ""}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
+// How long to wait after the last edit before pushing changes to the database.
+const SYNC_DEBOUNCE_MS = 1000;
 
-export default function App() {
-  const [storedAppState] = useState(loadStoredAppState);
-  const [initialResumes] = useState(() => normalizeResumeList(storedAppState.resumes));
-  const initialSelectedResume = initialResumes.find((resume) => resume.id === storedAppState.selectedResumeId) ?? initialResumes[0];
+/* ── Component ─────────────────────────────────────────────── */
+
+export default function App({ initialData = null, userId = null }) {
+  // The database is the single source of truth for resume data: the server loads
+  // it into `initialData` on sign-in, and every edit is synced back (see below).
+  const [initialState] = useState(() => initialData ?? {});
+  const [initialResumes] = useState(() => normalizeResumeList(initialState.resumes));
+  const initialSelectedResume = initialResumes.find((resume) => resume.id === initialState.selectedResumeId) ?? initialResumes[0];
   const [resumes, setResumes] = useState(initialResumes);
   const [selectedResumeId, setSelectedResumeId] = useState(initialSelectedResume.id);
   const [markdown, setMarkdown] = useState(initialSelectedResume.content);
-  const [profile, setProfile] = useState(() => normalizeProfile(storedAppState.profile));
+  const [profile, setProfile] = useState(() => normalizeProfile(initialState.profile));
   const [workHistory, setWorkHistory] = useState(() =>
     sortWorkHistory(
-      normalizeStoredList(storedAppState.workHistory, INITIAL_WORK_HISTORY).map(normalizeWorkHistoryItem)
+      normalizeStoredList(initialState.workHistory, INITIAL_WORK_HISTORY).map(normalizeWorkHistoryItem)
     )
   );
-  const [llmSettings, setLlmSettings] = useState(() => normalizeLlmSettings(storedAppState.llmSettings));
-  const [apiKeyDrafts, setApiKeyDrafts] = useState(() => {
-    const settings = normalizeLlmSettings(storedAppState.llmSettings);
-    return {
-      gemini: settings.geminiApiKey,
-      openai: settings.openaiApiKey,
-      anthropic: settings.anthropicApiKey,
-      firecrawl: settings.firecrawlApiKey ?? "",
-      mistral: settings.mistralApiKey ?? "",
-    };
-  });
+  // Provider/model choice isn't persisted; it resets to the default each load.
+  const [llmSettings, setLlmSettings] = useState(() => normalizeLlmSettings());
   const [modelOptionsByProvider, setModelOptionsByProvider] = useState(FALLBACK_MODEL_OPTIONS);
   const [modelOptionsStatus, setModelOptionsStatus] = useState({
     gemini: "idle",
     openai: "idle",
     anthropic: "idle",
+    xai: "idle",
   });
-  const [apiKeySaveToast, setApiKeySaveToast] = useState("");
   const [workHistorySaveToast, setWorkHistorySaveToast] = useState("");
   const [workHistorySearch, setWorkHistorySearch] = useState("");
   const [highlightedWorkId, setHighlightedWorkId] = useState(null);
   // Which position's inline clarity review is open (null = none).
   const [reviewingWorkId, setReviewingWorkId] = useState(null);
-  // Which position's inline "add details" enrichment panel is open (null = none).
+  // Which position's inline "Expand experience" enrichment panel is open (null = none).
   const [enrichingWorkId, setEnrichingWorkId] = useState(null);
   // Which position is pending a delete confirmation (null = no modal open).
   const [deleteConfirmWorkId, setDeleteConfirmWorkId] = useState(null);
+  // Whether the opt-in duplicate/overlap review dialog is open.
+  const [isPositionReviewOpen, setIsPositionReviewOpen] = useState(false);
+  // Delete-account dialog: open state plus the typed confirmation phrase that
+  // has to match DELETE_ACCOUNT_CONFIRM_PHRASE before the button arms.
+  const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
+  const [deleteAccountConfirmText, setDeleteAccountConfirmText] = useState("");
   const [profileDataToast, setProfileDataToast] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [generateStatus, setGenerateStatus] = useState("");
@@ -230,26 +209,45 @@ export default function App() {
   const [isCreateResumeOpen, setIsCreateResumeOpen] = useState(false);
   const [resumeCompanyDraft, setResumeCompanyDraft] = useState("");
   const [resumeJobTitleDraft, setResumeJobTitleDraft] = useState("");
-  const [theme, setTheme] = useState(() => {
-    if (typeof window === "undefined") return "light";
-    return window.localStorage.getItem("theme") === "dark" ? "dark" : "light";
-  });
+  // Theme isn't persisted; it starts light on each load.
+  const [theme, setTheme] = useState("light");
   const pageRef = useRef(null);
   const previewRef = useRef(null);
   const resumeMenuRef = useRef(null);
-  const apiKeySaveToastTimeoutRef = useRef(null);
   const workHistorySaveToastTimeoutRef = useRef(null);
   const workHistorySaveToastDebounceRef = useRef(null);
   const profileDataToastTimeoutRef = useRef(null);
   const missingExperienceSaveToastTimeoutRef = useRef(null);
+  // Cloud-sync bookkeeping: the Supabase client, the last snapshot written, and
+  // guards so saves never overlap or fire during account deletion.
+  const supabaseClientRef = useRef(null);
+  const syncInitializedRef = useRef(false);
+  const lastSyncedRef = useRef(null);
+  const savingRef = useRef(false);
+  const pendingSyncRef = useRef(null);
+  const syncDisabledRef = useRef(false);
+
+  const getSupabaseClient = () => {
+    if (!supabaseClientRef.current) {
+      supabaseClientRef.current = createClient();
+    }
+    return supabaseClientRef.current;
+  };
 
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
-    window.localStorage.setItem("theme", theme);
   }, [theme]);
 
   const sortedWorkHistory = useMemo(() => sortWorkHistory(workHistory), [workHistory]);
+
+  // Suspected duplicate/overlapping/dually-held positions, minus the pairs the
+  // person already confirmed as intentional (profile.conflictAcks). Reviewing
+  // them is optional: a quiet prompt above the timeline opens the dialog.
+  const workConflicts = useMemo(
+    () => detectPositionConflicts(workHistory, { ackKeys: profile.conflictAcks ?? [] }),
+    [workHistory, profile.conflictAcks]
+  );
 
   // Plain-language reasons an action is gated, surfaced as inline hints + tooltips
   // so users know what to fix instead of facing a silently disabled button. Each
@@ -266,6 +264,7 @@ export default function App() {
         : "";
   const scrapeDisabledReason = !scrapeUrl.trim() ? "Enter a job page URL to scrape it." : "";
 
+  // Most recent first (same order as the timeline).
   const visibleWorkHistory = useMemo(() => {
     const normalized = workHistorySearch.trim().toLowerCase();
     if (!normalized) return sortedWorkHistory;
@@ -288,9 +287,10 @@ export default function App() {
   const maxH = PAGE_H - padding * 2;
 
   const blocks = useMemo(() => parseMarkdown(markdown), [markdown]);
+  const sortedResumes = useMemo(() => sortResumes(resumes), [resumes]);
   const selectedResume = useMemo(
-    () => resumes.find((resume) => resume.id === selectedResumeId) ?? resumes[0],
-    [resumes, selectedResumeId]
+    () => sortedResumes.find((resume) => resume.id === selectedResumeId) ?? sortedResumes[0],
+    [sortedResumes, selectedResumeId]
   );
   const visibleMissingExperienceDetails = useMemo(
     () =>
@@ -335,7 +335,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const fallback = resumes[0] ?? createResume();
+    const fallback = sortedResumes[0] ?? createResume();
 
     if (selectedResume?.id === selectedResumeId) return;
 
@@ -344,36 +344,81 @@ export default function App() {
     }
     setSelectedResumeId(fallback.id);
     setMarkdown(fallback.content);
-  }, [resumes, selectedResume, selectedResumeId]);
+  }, [resumes, sortedResumes, selectedResume, selectedResumeId]);
 
+  // Persist every resume-data change to the database, debounced. There's no
+  // localStorage copy anymore — the database is the source of truth.
   useEffect(() => {
-    saveStoredAppState({
-      resumes,
-      selectedResumeId,
-      profile,
-      workHistory,
-      llmSettings,
-    });
-  }, [resumes, selectedResumeId, profile, workHistory, llmSettings]);
+    async function saveSnapshot(pending) {
+      if (syncDisabledRef.current) return;
+      // Never run two saves at once; keep only the latest edit queued.
+      if (savingRef.current) {
+        pendingSyncRef.current = pending;
+        return;
+      }
+      savingRef.current = true;
+      try {
+        await syncAppStateToDb(getSupabaseClient(), userId, pending);
+      } catch (error) {
+        // Force a retry on the next edit, and let the user know it didn't save.
+        lastSyncedRef.current = null;
+        showProfileDataToast("Couldn't save your changes. They'll retry on your next edit.");
+        console.error("Cloud sync failed:", error);
+      } finally {
+        savingRef.current = false;
+        const queued = pendingSyncRef.current;
+        pendingSyncRef.current = null;
+        if (queued) saveSnapshot(queued);
+      }
+    }
 
+    const snapshot = { profile, workHistory, resumes, selectedResumeId };
+    const serialized = JSON.stringify(snapshot);
+
+    // The freshly-loaded state already matches the database; don't write it back.
+    if (!syncInitializedRef.current) {
+      syncInitializedRef.current = true;
+      lastSyncedRef.current = serialized;
+      return;
+    }
+    if (!userId || serialized === lastSyncedRef.current) return;
+
+    const timer = setTimeout(() => {
+      lastSyncedRef.current = serialized;
+      saveSnapshot(snapshot);
+    }, SYNC_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [resumes, selectedResumeId, profile, workHistory, userId]);
+
+  // The server owns the provider keys, so every provider's model list is
+  // fetchable from first load — one pass on mount is all it takes. Also pick
+  // the first provider that has a key (xAI → Anthropic → OpenAI → Google) so
+  // the default isn't Gemini when only another key is configured.
   useEffect(() => {
     let cancelled = false;
 
-    async function loadProviderModels(provider, apiKey) {
-      if (!apiKey.trim()) {
-        if (cancelled) return;
-        setModelOptionsByProvider((current) => ({
-          ...current,
-          [provider]: FALLBACK_MODEL_OPTIONS[provider] ?? [],
-        }));
-        setModelOptionsStatus((current) => ({ ...current, [provider]: "idle" }));
-        return;
+    async function applyPreferredProvider() {
+      try {
+        const { preferred } = await fetchPreferredLlmProvider();
+        if (cancelled || !preferred) return;
+        setLlmSettings((current) => {
+          // Only replace the bundled startup default so a fast manual change wins.
+          if (current.provider !== "gemini") return current;
+          return normalizeLlmSettings({
+            provider: preferred,
+            model: getDefaultModelForProvider(preferred),
+          });
+        });
+      } catch {
+        // Keep the bundled default; generation will surface a missing-key error.
       }
+    }
 
+    async function loadProviderModels(provider) {
       setModelOptionsStatus((current) => ({ ...current, [provider]: "loading" }));
 
       try {
-        const options = await fetchProviderModelOptions(provider, apiKey);
+        const { options, source } = await fetchProviderModelOptions(provider);
         if (cancelled) return;
 
         if (!options.length) {
@@ -382,7 +427,12 @@ export default function App() {
         }
 
         setModelOptionsByProvider((current) => ({ ...current, [provider]: options }));
-        setModelOptionsStatus((current) => ({ ...current, [provider]: "ready" }));
+        // "idle" renders as "Showing default models." — accurate when the
+        // server answered with its bundled fallback instead of a live listing.
+        setModelOptionsStatus((current) => ({
+          ...current,
+          [provider]: source === "live" ? "ready" : "idle",
+        }));
       } catch {
         if (!cancelled) {
           setModelOptionsStatus((current) => ({ ...current, [provider]: "error" }));
@@ -390,14 +440,13 @@ export default function App() {
       }
     }
 
-    loadProviderModels("gemini", llmSettings.geminiApiKey);
-    loadProviderModels("openai", llmSettings.openaiApiKey);
-    loadProviderModels("anthropic", llmSettings.anthropicApiKey);
+    applyPreferredProvider();
+    for (const [provider] of LLM_PROVIDERS) loadProviderModels(provider);
 
     return () => {
       cancelled = true;
     };
-  }, [llmSettings.geminiApiKey, llmSettings.openaiApiKey, llmSettings.anthropicApiKey]);
+  }, []);
 
   useEffect(() => {
     if (!activeModelOptions.length) return;
@@ -438,9 +487,6 @@ export default function App() {
   }, [isResumeMenuOpen]);
 
   useEffect(() => () => {
-    if (apiKeySaveToastTimeoutRef.current) {
-      clearTimeout(apiKeySaveToastTimeoutRef.current);
-    }
     if (workHistorySaveToastTimeoutRef.current) {
       clearTimeout(workHistorySaveToastTimeoutRef.current);
     }
@@ -592,15 +638,7 @@ export default function App() {
       setResumes(imported.resumes);
       setSelectedResumeId(imported.selectedResumeId);
       setMarkdown(imported.markdown);
-      setLlmSettings((current) => ({
-        ...imported.llmSettings,
-        geminiApiKey: current.geminiApiKey,
-        openaiApiKey: current.openaiApiKey,
-        anthropicApiKey: current.anthropicApiKey,
-        firecrawlApiKey: current.firecrawlApiKey,
-        mistralApiKey: current.mistralApiKey,
-        rememberApiKey: true,
-      }));
+      setLlmSettings(imported.llmSettings);
       showProfileDataToast("Profile data imported.");
     } catch (error) {
       showProfileDataToast(error instanceof Error ? error.message : "Import failed.");
@@ -609,19 +647,26 @@ export default function App() {
     }
   };
 
-  const handleSaveApiKeys = () => {
-    setLlmSettings((current) => applyApiKeyDrafts(current, apiKeyDrafts));
+  const handleOpenDeleteAccount = () => {
+    setDeleteAccountConfirmText("");
+    setIsDeleteAccountOpen(true);
+  };
 
-    setApiKeySaveToast("API keys saved to this device.");
+  const handleConfirmDeleteAccount = async (e) => {
+    e.preventDefault();
+    if (deleteAccountConfirmText.trim() !== DELETE_ACCOUNT_CONFIRM_PHRASE) return;
 
-    if (apiKeySaveToastTimeoutRef.current) {
-      clearTimeout(apiKeySaveToastTimeoutRef.current);
+    // Stop autosave from racing the deletion, wipe the account's data from the
+    // database, sign out, and leave for the marketing site.
+    syncDisabledRef.current = true;
+    try {
+      const supabase = getSupabaseClient();
+      await deleteUserData(supabase, userId);
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error("Account deletion failed:", error);
     }
-
-    apiKeySaveToastTimeoutRef.current = setTimeout(() => {
-      setApiKeySaveToast("");
-      apiKeySaveToastTimeoutRef.current = null;
-    }, 3000);
+    window.location.assign("/");
   };
 
   const handleSelectResume = (resumeId) => {
@@ -636,7 +681,8 @@ export default function App() {
   const handleDeleteResume = (resumeId) => {
     const remaining = resumes.filter((resume) => resume.id !== resumeId);
     const nextResumes = remaining.length > 0 ? remaining : [createResume()];
-    const nextSelected = resumeId === selectedResumeId ? nextResumes[0] : selectedResume;
+    const nextSelected =
+      resumeId === selectedResumeId ? sortResumes(nextResumes)[0] : selectedResume;
 
     setResumes(nextResumes);
     setSelectedResumeId(nextSelected.id);
@@ -699,18 +745,21 @@ export default function App() {
 
   const handleToggleWorkPresent = (workId, isPresent) => {
     setWorkHistory((current) =>
-      sortWorkHistory(
-        current.map((item) =>
-          item.id === workId
-            ? normalizeWorkHistoryItem({
-                ...item,
-                endMonth: isPresent ? "" : item.endMonth,
-                endYear: isPresent ? "present" : "",
-              })
-            : item
-        )
+      current.map((item) =>
+        item.id === workId
+          ? normalizeWorkHistoryItem({
+              ...item,
+              endMonth: isPresent ? "" : item.endMonth,
+              endYear: isPresent ? "present" : "",
+            })
+          : item
       )
     );
+    if (!isPresent) {
+      requestAnimationFrame(() => {
+        document.getElementById(`work-end-year-${workId}`)?.focus();
+      });
+    }
   };
 
   const handleUpdateWorkHistory = (workId, field, value) => {
@@ -722,12 +771,10 @@ export default function App() {
     }
 
     setWorkHistory((current) =>
-      sortWorkHistory(
-        current.map((item) =>
-          item.id === workId
-            ? normalizeWorkHistoryItem({ ...item, [field]: nextValue })
-            : item
-        )
+      current.map((item) =>
+        item.id === workId
+          ? normalizeWorkHistoryItem({ ...item, [field]: nextValue })
+          : item
       )
     );
 
@@ -764,6 +811,52 @@ export default function App() {
     setDeleteConfirmWorkId(null);
   };
 
+  const showPositionReviewToast = useCallback((message) => {
+    setWorkHistorySaveToast(message);
+    if (workHistorySaveToastTimeoutRef.current) {
+      clearTimeout(workHistorySaveToastTimeoutRef.current);
+    }
+    workHistorySaveToastTimeoutRef.current = setTimeout(() => {
+      setWorkHistorySaveToast("");
+      workHistorySaveToastTimeoutRef.current = null;
+    }, 3000);
+  }, []);
+
+  // "Keep both" / "dates are correct" records the finding's content-signature
+  // key on the profile (pruning keys that no longer match anything) so a
+  // confirmed pair or a dismissed date warning stays quiet until its dates change.
+  const handleKeepBothPositions = useCallback(
+    (conflict) => {
+      const liveKeys = collectConflictKeys(workHistory);
+      setProfile((current) => {
+        const kept = (current.conflictAcks ?? []).filter((key) => liveKeys.has(key));
+        return { ...current, conflictAcks: [...new Set([...kept, conflict.id])] };
+      });
+      showPositionReviewToast(
+        conflict.b ? "Got it — both positions stay." : "Got it — dates left as is."
+      );
+    },
+    [workHistory, showPositionReviewToast]
+  );
+
+  // Merge a duplicate pair using the dates the person picked in the dialog.
+  const handleMergePositions = useCallback(
+    (conflict, picks) => {
+      setWorkHistory((current) => applyDuplicateMerge(current, conflict, picks));
+      showPositionReviewToast("Merged into one position.");
+    },
+    [showPositionReviewToast]
+  );
+
+  // Apply a one-click boundary fix to an overlapping pair.
+  const handleFixPositionDates = useCallback(
+    (conflict, fix) => {
+      setWorkHistory((current) => applyBoundaryFix(current, fix));
+      showPositionReviewToast("Dates updated.");
+    },
+    [showPositionReviewToast]
+  );
+
   // The clarity review and enrichment panels share the space under a position's
   // description, so opening one closes the other.
   const handleToggleExperienceReview = (workId) => {
@@ -777,16 +870,17 @@ export default function App() {
   };
 
   // Ask the model which sentences in a position's description are hard to read.
+  // Validation (and the step indicator for it) lives in ExperienceReview so the
+  // prepare stage can advance after this call returns.
   const handleReviewSentences = useCallback(
     async ({ position, description }) => {
-      const parsed = await callLlmForJson(
-        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+      return callLlmForJson(
+        llmSettings,
         buildClarityReviewPrompt({ position, description }),
         null
       );
-      return validateClarityReview(parsed);
     },
-    [llmSettings, apiKeyDrafts]
+    [llmSettings]
   );
 
   // Turn a flagged sentence plus the person's clarification (and any confirmed
@@ -794,13 +888,13 @@ export default function App() {
   const handleProposeSentenceRewrite = useCallback(
     async ({ position, sentence, clarification, skills }) => {
       const text = await callLlm(
-        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        llmSettings,
         buildClaritySuggestionPrompt({ position, sentence, clarification, skills }),
         null
       );
       return cleanSuggestedSentence(text);
     },
-    [llmSettings, apiKeyDrafts]
+    [llmSettings]
   );
 
   // Swap an accepted rewrite into the stored description and confirm with a toast.
@@ -828,44 +922,53 @@ export default function App() {
     }, 3000);
   }, []);
 
-  // Ask the model which responsibilities job postings for this title usually
-  // require that the description doesn't cover yet.
-  const handleLoadResponsibilityAreas = useCallback(
+  // Ask the model for the first few dead-simple questions about what this person
+  // actually does day to day. Grounded in the role, not job-posting boilerplate.
+  const handleLoadOpeningQuestions = useCallback(
     async ({ position, company, description, tenureLabel }) => {
       const parsed = await callLlmForJson(
-        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
-        buildResponsibilityMapPrompt({ position, company, description, tenure: tenureLabel }),
+        llmSettings,
+        buildOpeningQuestionsPrompt({ position, company, description, tenure: tenureLabel }),
         null
       );
-      return validateResponsibilityMap(parsed);
+      return validateOpeningQuestions(parsed);
     },
-    [llmSettings, apiKeyDrafts]
+    [llmSettings]
   );
 
-  // Build click-to-answer questions for the responsibility areas the person confirmed.
-  const handleLoadDrilldownQuestions = useCallback(
-    async ({ position, company, description, areas }) => {
+  // Ask the next questions that branch off what the person has answered so far,
+  // or get back an "enough" signal that we know enough to write it up.
+  const handleLoadFollowupQuestions = useCallback(
+    async ({ position, company, description, tenureLabel, transcript, round }) => {
       const parsed = await callLlmForJson(
-        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
-        buildDrilldownPrompt({ position, company, description, areas }),
+        llmSettings,
+        buildFollowupQuestionsPrompt({
+          position,
+          company,
+          description,
+          tenure: tenureLabel,
+          transcript,
+          round,
+          maxRounds: MAX_QA_ROUNDS,
+        }),
         null
       );
-      return validateDrilldownQuestions(parsed, areas);
+      return validateFollowupQuestions(parsed, { round });
     },
-    [llmSettings, apiKeyDrafts]
+    [llmSettings]
   );
 
-  // Turn one area's confirmed answers into a single plainspoken bullet.
-  const handleComposeEnrichedBullet = useCallback(
-    async ({ position, area, answers }) => {
-      const text = await callLlm(
-        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
-        buildEnrichedBulletPrompt({ position, area, answers }),
+  // Turn the whole Q&A transcript into 1-3 plainspoken resume bullets.
+  const handleComposeEnrichedBullets = useCallback(
+    async ({ position, company, description, tenureLabel, transcript }) => {
+      const parsed = await callLlmForJson(
+        llmSettings,
+        buildComposePrompt({ position, company, description, tenure: tenureLabel, transcript }),
         null
       );
-      return cleanEnrichedBullet(text);
+      return validateComposedBullets(parsed);
     },
-    [llmSettings, apiKeyDrafts]
+    [llmSettings]
   );
 
   // Append an accepted bullet to the stored description and confirm with a toast.
@@ -927,49 +1030,9 @@ export default function App() {
     setScrapeError("");
     setScrapeSuccess("");
 
-    let firecrawlKey = sanitizeApiKey(apiKeyDrafts.firecrawl) || sanitizeApiKey(llmSettings.firecrawlApiKey);
-    if (!firecrawlKey && sanitizeApiKey(apiKeyDrafts.firecrawl)) {
-      firecrawlKey = sanitizeApiKey(apiKeyDrafts.firecrawl);
-      setLlmSettings((current) => applyApiKeyDrafts(current, apiKeyDrafts));
-    }
-
-    if (!firecrawlKey) {
-      setScrapeError("Please enter and save a Firecrawl API key first.");
-      setIsScraping(false);
-      return;
-    }
-
     try {
-      // 1. Fetch raw markdown and metadata from Firecrawl
-      const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${firecrawlKey}`,
-        },
-        body: JSON.stringify({
-          url: scrapeUrl.trim(),
-          formats: ["markdown"],
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Scrape failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
-      if (!result.success) {
-        throw new Error(result.error || "Scrape was unsuccessful.");
-      }
-
-      const scrapedText = result.data?.markdown;
-      if (!scrapedText) {
-        throw new Error("No markdown content was returned from the page.");
-      }
-
-      const pageTitle = result.data?.metadata?.title || "";
-      const pageDescription = result.data?.metadata?.description || "";
+      // 1. Fetch raw markdown and metadata via the server's Firecrawl proxy
+      const scraped = await scrapeJobPage(scrapeUrl.trim());
 
       // 2. Select the cheapest model depending on the active provider
       const provider = llmSettings.provider;
@@ -978,24 +1041,24 @@ export default function App() {
         cheapestModel = "gpt-5.4-nano";
       } else if (provider === "anthropic") {
         cheapestModel = "claude-haiku-4-5";
+      } else if (provider === "xai") {
+        cheapestModel = "grok-4.3";
       } else {
         cheapestModel = "gemini-3.1-flash-lite";
       }
 
-      // Prepare LLM settings with cheapest model
-      const settingsWithDraftKeys = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
       const cleanLlmSettings = {
-        ...settingsWithDraftKeys,
+        ...llmSettings,
         model: cheapestModel,
       };
 
       // 3. Clean up raw content using the cheapest model
       setScrapeSuccess("Scraped raw text. Cleaning up job description with AI...");
-      
+
       const cleanPrompt = extractJobDescription({
-        title: pageTitle,
-        metaDescription: pageDescription,
-        rawText: scrapedText,
+        title: scraped.title,
+        metaDescription: scraped.description,
+        rawText: scraped.markdown,
       });
 
       const cleanedLlmResponse = await callLlm(cleanLlmSettings, cleanPrompt, null);
@@ -1035,7 +1098,7 @@ export default function App() {
       // Step 1: one LLM call reads the whole posting and compares it against
       // the stored work history, returning gap questions.
       const parsed = await callLlmForJson(
-        applyApiKeyDrafts(llmSettings, apiKeyDrafts),
+        llmSettings,
         buildMissingExperienceReviewPrompt({ workHistory, jobDescription }),
         null
       );
@@ -1210,7 +1273,6 @@ export default function App() {
     setMissingExperienceStatus("");
 
     try {
-      const settings = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
       const resolved = await Promise.all(
         tasks.map(async (task) => {
           const fallback = task.detail.plainspokenDetail.replace(/^[-•]\s*/, "").trim();
@@ -1218,7 +1280,7 @@ export default function App() {
             return { workId: task.workId, line: fallback };
           }
           const text = await callLlm(
-            settings,
+            llmSettings,
             formatExperienceElaboration({ question: task.detail.question, answer: task.answer }),
             null
           );
@@ -1308,7 +1370,6 @@ export default function App() {
 
     try {
       const base64 = await readFileAsBase64(file);
-      const settings = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
       const importFile = {
         name: file.name,
         mimeType: resolveImportMimeType(file),
@@ -1321,11 +1382,11 @@ export default function App() {
       let ocrText = null;
       if (needsMistralOcr(file)) {
         setImportStatus("Converting the file to text with Mistral OCR...");
-        ocrText = await callMistralOcr(settings, importFile);
+        ocrText = await callMistralOcr(importFile);
       }
 
       setImportStatus("Asking the model to extract profile and work history...");
-      const imported = await callLlmForJson(settings, importResume(ocrText), ocrText ? null : importFile);
+      const imported = await callLlmForJson(llmSettings, importResume(ocrText), ocrText ? null : importFile);
       const importedProfile = coerceImportedProfile(imported.profile);
       const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
 
@@ -1342,8 +1403,17 @@ export default function App() {
         }
         return nextProfile;
       });
-      setWorkHistory((current) => mergeWorkHistory(current, importedHistory));
-      setImportStatus(`Imported ${importedHistory.length} role${importedHistory.length === 1 ? "" : "s"} from ${file.name}.`);
+      // Entries matching an existing position's title + company + dates (typo-
+      // tolerant) fold in automatically instead of piling up as duplicates.
+      setWorkHistory((current) => mergeImportedWorkHistory(current, importedHistory).merged);
+      const { mergedCount } = mergeImportedWorkHistory(workHistory, importedHistory);
+      const mergedNote =
+        mergedCount > 0
+          ? ` ${mergedCount} duplicate${mergedCount === 1 ? " was" : "s were"} merged automatically.`
+          : "";
+      setImportStatus(
+        `Imported ${importedHistory.length} role${importedHistory.length === 1 ? "" : "s"} from ${file.name}.${mergedNote}`
+      );
     } catch (error) {
       setImportStatus(error instanceof Error ? error.message : "Import failed.");
     } finally {
@@ -1359,13 +1429,11 @@ export default function App() {
     setGenerateStepIndex(0);
 
     try {
-      const settingsWithDraftKeys = applyApiKeyDrafts(llmSettings, apiKeyDrafts);
-
       // Step 1: read the job description once — the company/position for the
       // saved resume's title plus the key responsibilities and requirements
       // that the later steps rank bullets against and frame the summary with.
       const jobAnalysis = validateJobAnalysis(
-        await callLlmForJson(settingsWithDraftKeys, buildJobAnalysisPrompt(generationInstructions), null)
+        await callLlmForJson(llmSettings, buildJobAnalysisPrompt(generationInstructions), null)
       );
       const resumeTitle = titleGeneratedResume(jobAnalysis.company, jobAnalysis.position);
 
@@ -1377,7 +1445,7 @@ export default function App() {
       // most-applicable-first for this specific job.
       setGenerateStepIndex(1);
       const selectionJson = await callLlmForJson(
-        settingsWithDraftKeys,
+        llmSettings,
         selectRankedEvidence({ profile, workHistory, jobAnalysis, instructions: generationInstructions, coverage }),
         null
       );
@@ -1390,7 +1458,7 @@ export default function App() {
       // Step 3: compose the markdown from the pre-ranked evidence.
       setGenerateStepIndex(2);
       const text = await callLlm(
-        settingsWithDraftKeys,
+        llmSettings,
         composeResume({
           profile,
           selectedEvidence,
@@ -1638,6 +1706,10 @@ export default function App() {
 
           {sortedWorkHistory.length > 0 && (
             <div className="px-4 py-3 border-b border-neutral-800 space-y-3">
+              <PositionReviewPrompt
+                conflicts={workConflicts}
+                onOpen={() => setIsPositionReviewOpen(true)}
+              />
               <WorkHistoryTimeline
                 workHistory={sortedWorkHistory}
                 onSelectRole={handleFocusWorkHistoryRole}
@@ -1713,10 +1785,10 @@ export default function App() {
                         disabled={!item.position.trim()}
                         title={
                           !item.position.trim()
-                            ? "Add a position title first so the model knows what this job involves."
+                            ? "Add a position title first so we know what this job usually involves."
                             : sparse
-                              ? "This entry looks light — answer a few quick questions to add details."
-                              : "Answer a few quick questions to add more details."
+                              ? "This entry looks light — answer a few quick questions to surface experience you haven't written down yet."
+                              : "Answer a few quick questions to surface experience you haven't written down yet."
                         }
                         className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                           enrichingWorkId === item.id
@@ -1725,9 +1797,9 @@ export default function App() {
                         }`}
                       >
                         <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                          <path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z" />
+                          <path fillRule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clipRule="evenodd" />
                         </svg>
-                        {enrichingWorkId === item.id ? "Adding details" : "Add details"}
+                        {enrichingWorkId === item.id ? "Expanding experience" : "Expand experience"}
                         {sparse && enrichingWorkId !== item.id && item.position.trim() && (
                           <span
                             className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
@@ -1830,6 +1902,7 @@ export default function App() {
                           End Year
                         </span>
                         <input
+                          id={`work-end-year-${item.id}`}
                           type="text"
                           value={item.endYear === "present" ? "" : item.endYear ?? ""}
                           onChange={(e) => handleUpdateWorkHistory(item.id, "endYear", e.target.value)}
@@ -1884,9 +1957,9 @@ export default function App() {
                         company={item.company}
                         description={item.description}
                         tenureLabel={tenureLabel}
-                        loadAreas={handleLoadResponsibilityAreas}
-                        loadQuestions={handleLoadDrilldownQuestions}
-                        composeBullet={handleComposeEnrichedBullet}
+                        loadOpening={handleLoadOpeningQuestions}
+                        loadFollowups={handleLoadFollowupQuestions}
+                        composeBullets={handleComposeEnrichedBullets}
                         onAcceptBullet={(bullet) => handleAppendDetailToWork(item.id, bullet)}
                         onClose={() => setEnrichingWorkId(null)}
                       />
@@ -2127,39 +2200,6 @@ export default function App() {
                       </p>
                     )}
 
-                    {/* Firecrawl API Key Box (if not yet saved) */}
-                    {!(apiKeyDrafts.firecrawl?.trim() || llmSettings.firecrawlApiKey?.trim()) && (
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-3">
-                        <div className="flex items-start gap-2.5">
-                          <div className="text-neutral-500 shrink-0 mt-0.5">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
-                            </svg>
-                          </div>
-                          <div className="flex-1">
-                            <p className="text-xs text-neutral-400">
-                              A Firecrawl API key is required to scrape job descriptions. Get one for free at <a href="https://firecrawl.dev" target="_blank" rel="noopener noreferrer" className="underline hover:text-neutral-200">firecrawl.dev</a>.
-                            </p>
-                            <div className="mt-2 flex gap-2">
-                              <input
-                                type="password"
-                                value={apiKeyDrafts.firecrawl ?? ""}
-                                onChange={(e) => setApiKeyDrafts((current) => ({ ...current, firecrawl: e.target.value }))}
-                                placeholder="fc-..."
-                                className="flex-1 rounded-md border border-neutral-700 bg-neutral-950 px-2.5 py-1.5 text-xs text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                              />
-                              <button
-                                type="button"
-                                onClick={handleSaveApiKeys}
-                                className="rounded-md border border-neutral-700 bg-neutral-800 px-2.5 py-1.5 text-xs font-medium text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-neutral-50"
-                              >
-                                Save Key
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
@@ -2431,12 +2471,14 @@ export default function App() {
               Settings
             </p>
             <p className="mt-1 text-xs text-neutral-500">
-              Model provider, model choice, and API key for imports and generation.
+              Model provider and model choice for imports and generation.
             </p>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 pagefit-scrollbar">
             <div className="mx-auto max-w-3xl space-y-5">
+              <AccountSection />
+
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                 <h2 className="text-sm font-semibold text-neutral-200">
                   Model settings
@@ -2482,93 +2524,10 @@ export default function App() {
                           ? "Loaded from provider."
                           : activeModelOptionsStatus === "error"
                             ? "Could not load models. Showing defaults."
-                            : "Save an API key to load the latest models."}
+                            : "Showing default models."}
                     </p>
                   </label>
                 </div>
-
-                <div className="mt-4 space-y-3">
-                  <p className="text-xs text-neutral-500">
-                    API keys
-                  </p>
-
-                  <label className="block">
-                    <span className="block text-xs text-neutral-500 mb-1">
-                      Google API key
-                    </span>
-                    <input
-                      type="password"
-                      value={apiKeyDrafts.gemini}
-                      onChange={(e) => setApiKeyDrafts((current) => ({ ...current, gemini: e.target.value }))}
-                      placeholder="AIza..."
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="block text-xs text-neutral-500 mb-1">
-                      OpenAI API key
-                    </span>
-                    <input
-                      type="password"
-                      value={apiKeyDrafts.openai}
-                      onChange={(e) => setApiKeyDrafts((current) => ({ ...current, openai: e.target.value }))}
-                      placeholder="sk-..."
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="block text-xs text-neutral-500 mb-1">
-                      Anthropic API key
-                    </span>
-                    <input
-                      type="password"
-                      value={apiKeyDrafts.anthropic}
-                      onChange={(e) => setApiKeyDrafts((current) => ({ ...current, anthropic: e.target.value }))}
-                      placeholder="sk-ant-..."
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="block text-xs text-neutral-500 mb-1">
-                      Firecrawl API key
-                    </span>
-                    <input
-                      type="password"
-                      value={apiKeyDrafts.firecrawl ?? ""}
-                      onChange={(e) => setApiKeyDrafts((current) => ({ ...current, firecrawl: e.target.value }))}
-                      placeholder="fc-..."
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="block text-xs text-neutral-500 mb-1">
-                      Mistral API key
-                    </span>
-                    <input
-                      type="password"
-                      value={apiKeyDrafts.mistral ?? ""}
-                      onChange={(e) => setApiKeyDrafts((current) => ({ ...current, mistral: e.target.value }))}
-                      placeholder="Used to import Word, PowerPoint, and OpenDocument resumes"
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                    />
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={handleSaveApiKeys}
-                    className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
-                  >
-                    Save API keys
-                  </button>
-                </div>
-
-                <p className="mt-3 text-xs text-neutral-500">
-                  API keys are saved in browser storage on this device.
-                </p>
               </div>
 
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -2577,9 +2536,6 @@ export default function App() {
                 </h2>
                 <p className="mt-1 text-sm text-neutral-500">
                   Download your profile, work history, resumes as markdown, and model preferences to use on another device.
-                </p>
-                <p className="mt-2 text-xs text-neutral-600">
-                  API keys are not included in exports.
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button
@@ -2599,6 +2555,22 @@ export default function App() {
                     Import profile data
                   </label>
                 </div>
+              </div>
+
+              <div className="rounded-xl border border-red-500/30 bg-neutral-950/40 p-4">
+                <h2 className="text-sm font-semibold text-red-600 dark:text-red-300">
+                  Delete account
+                </h2>
+                <p className="mt-1 text-sm text-neutral-500">
+                  Permanently removes everything stored on this device: your profile, work history, resumes, and settings. This can&rsquo;t be undone.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleOpenDeleteAccount}
+                  className="mt-4 rounded-lg border border-red-500/50 bg-red-500/15 px-4 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/25 dark:text-red-300"
+                >
+                  Delete account…
+                </button>
               </div>
             </div>
           </div>
@@ -2638,7 +2610,7 @@ export default function App() {
             {isResumeMenuOpen && (
               <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-xl border border-neutral-700 bg-neutral-950 shadow-2xl shadow-black/40">
                 <div className="max-h-56 overflow-y-auto p-1 pagefit-scrollbar">
-                  {resumes.map((resume) => (
+                  {sortedResumes.map((resume) => (
                     <div
                       key={resume.id}
                       className={`group flex items-center gap-1 rounded-lg ${
@@ -3015,13 +2987,27 @@ export default function App() {
         </div>
       </main>
 
-      {(apiKeySaveToast || workHistorySaveToast || profileDataToast) && (
+      {(workHistorySaveToast || profileDataToast) && (
         <div
           role="status"
           className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-emerald-500/30 bg-neutral-900 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-200 shadow-lg"
         >
-          {apiKeySaveToast || workHistorySaveToast || profileDataToast}
+          {workHistorySaveToast || profileDataToast}
         </div>
+      )}
+
+      {isPositionReviewOpen && (
+        <PositionReviewDialog
+          conflicts={workConflicts}
+          onClose={() => setIsPositionReviewOpen(false)}
+          onApplyMerge={handleMergePositions}
+          onApplyFix={handleFixPositionDates}
+          onKeepBoth={handleKeepBothPositions}
+          onEditRole={(roleId) => {
+            setIsPositionReviewOpen(false);
+            handleFocusWorkHistoryRole(roleId);
+          }}
+        />
       )}
 
       {deleteConfirmWorkId !== null && (() => {
@@ -3069,6 +3055,61 @@ export default function App() {
           </div>
         );
       })()}
+
+      {isDeleteAccountOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setIsDeleteAccountOpen(false)}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-account-title"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleConfirmDeleteAccount}
+            className="w-full max-w-sm rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl shadow-black/50"
+          >
+            <h2 id="delete-account-title" className="text-lg font-semibold text-neutral-50">
+              Delete account?
+            </h2>
+            <p className="mt-1 text-sm text-neutral-400">
+              This permanently deletes everything One Resume stores on this device — your profile, work history, resumes, and settings. This can&rsquo;t be undone.
+            </p>
+
+            <label htmlFor="delete-account-confirm" className="mt-4 block text-xs text-neutral-500">
+              Type <span className="font-semibold text-neutral-200">{DELETE_ACCOUNT_CONFIRM_PHRASE}</span> to confirm
+            </label>
+            <input
+              id="delete-account-confirm"
+              type="text"
+              value={deleteAccountConfirmText}
+              onChange={(e) => setDeleteAccountConfirmText(e.target.value)}
+              placeholder={DELETE_ACCOUNT_CONFIRM_PHRASE}
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              className="mt-2 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-red-500/60"
+            />
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsDeleteAccountOpen(false)}
+                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={deleteAccountConfirmText.trim() !== DELETE_ACCOUNT_CONFIRM_PHRASE}
+                className="rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-300"
+              >
+                Delete account
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {isCreateResumeOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">

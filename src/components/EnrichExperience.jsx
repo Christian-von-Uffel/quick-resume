@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MAX_ENRICH_AREAS_PER_ROUND } from "../lib/enrichExperience";
+import { MAX_QA_ROUNDS } from "../lib/enrichExperience";
 
 const chipClass = (active) =>
   `rounded-lg border px-3 py-1.5 text-sm transition-colors ${
@@ -8,209 +8,256 @@ const chipClass = (active) =>
       : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
   }`;
 
-// Inline "add details" panel for a single work-history position. On open it asks
-// the model which responsibilities job postings for this title usually require
-// (minus what the description already shows) and offers them as chips. For each
-// confirmed area a short set of click-to-answer questions (specifics, scale,
-// outcome, ownership, tools) feeds one composed bullet the person can accept,
-// which appends to the description.
+// Attach the per-question runtime answer state a fresh round of questions needs.
+const withRuntimeState = (questions) =>
+  questions.map((question) => ({
+    ...question,
+    choice: null, // single-select / yes-no answer
+    choices: [], // multi-select answers
+    usingCustom: false,
+    customAnswer: "",
+    skipped: false,
+  }));
+
+// Turn a round's answered questions into transcript entries { question, answer }.
+// Skipped and unanswered questions drop out; multi-select answers join with commas.
+const collectAnswers = (questions) =>
+  questions
+    .map((question) => {
+      if (question.skipped) return null;
+      if (question.usingCustom && question.customAnswer.trim()) {
+        return { question: question.question, answer: question.customAnswer.trim() };
+      }
+      if (question.multiSelect && question.choices.length) {
+        return { question: question.question, answer: question.choices.join(", ") };
+      }
+      if (!question.multiSelect && question.choice) {
+        return { question: question.question, answer: question.choice };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+// Inline "Expand experience" panel for a single work-history position. Rather than
+// guessing what job postings for the title demand, it runs a short, adaptive
+// interview: a couple of dead-simple grounded questions about what the person
+// actually does, then follow-up rounds that branch off their own answers, then a
+// compose step that turns the whole transcript into a few plainspoken bullets the
+// person can add to the description.
 export function EnrichExperience({
   position,
   company,
   description,
   tenureLabel,
-  loadAreas,
-  loadQuestions,
-  composeBullet,
+  loadOpening,
+  loadFollowups,
+  composeBullets,
   onAcceptBullet,
   onClose,
 }) {
-  // "areas-loading" | "areas" | "areas-empty" | "questions-loading" | "questions" | "error"
-  const [step, setStep] = useState("areas-loading");
+  // "loading" | "answering" | "review" | "error"
+  const [status, setStatus] = useState("loading");
+  // Which async step is (or was) running: "opening" | "followups" | "compose".
+  // Drives the loading copy and what a "Try again" retries.
+  const [loadingKind, setLoadingKind] = useState("opening");
+  const [round, setRound] = useState(1); // 1 = opening, 2..MAX_QA_ROUNDS = follow-ups
+  const [questions, setQuestions] = useState([]); // this round's questions
+  const [transcript, setTranscript] = useState([]); // accumulated { question, answer }
+  const [bullets, setBullets] = useState([]); // [{ text, resolution: null|"accepted"|"rejected" }]
   const [error, setError] = useState("");
-  const [areas, setAreas] = useState([]);
-  const [selectedAreaIds, setSelectedAreaIds] = useState([]);
-  const [areaItems, setAreaItems] = useState([]);
-  const cancelledRef = useRef(false);
 
+  const cancelledRef = useRef(false);
+  const panelRef = useRef(null);
+  // Holds a thunk that re-runs the last async step with its exact arguments, so
+  // "Try again" always retries what actually failed (right transcript and round).
+  const retryRef = useRef(null);
+
+  // The trigger button lives at the top of a tall position card, so this panel
+  // opens below the fold. Pull it into view on open ("nearest" no-ops when it's
+  // already visible, so a card near the top of the screen isn't yanked).
+  useEffect(() => {
+    panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, []);
+
+  // Run the opening batch once on open. The parent remounts this component (keyed
+  // by position id) whenever a fresh interview is wanted, so this snapshots the
+  // description at open time.
   useEffect(() => {
     cancelledRef.current = false;
-
-    (async () => {
-      try {
-        const found = await loadAreas({ position, company, description, tenureLabel });
-        if (cancelledRef.current) return;
-        setAreas(found);
-        setStep(found.length ? "areas" : "areas-empty");
-      } catch (err) {
-        if (cancelledRef.current) return;
-        setError(err instanceof Error ? err.message : "Could not look up responsibilities for this role.");
-        setStep("error");
-      }
-    })();
-
+    runOpening();
     return () => {
       cancelledRef.current = true;
     };
-    // Enriches a snapshot of the description once per open; the parent remounts
-    // this component (keyed by position id) whenever a fresh round is wanted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const toggleArea = (areaId) => {
-    setSelectedAreaIds((current) => {
-      if (current.includes(areaId)) return current.filter((id) => id !== areaId);
-      if (current.length >= MAX_ENRICH_AREAS_PER_ROUND) return current;
-      return [...current, areaId];
-    });
-  };
-
-  const handleContinue = async () => {
-    const chosen = areas.filter((entry) => selectedAreaIds.includes(entry.id));
-    if (!chosen.length) return;
-
-    setStep("questions-loading");
+  const runOpening = async () => {
+    retryRef.current = runOpening;
+    setStatus("loading");
+    setLoadingKind("opening");
+    setError("");
     try {
-      const grouped = await loadQuestions({
-        position,
-        company,
-        description,
-        areas: chosen.map((entry) => entry.area),
-      });
+      const found = await loadOpening({ position, company, description, tenureLabel });
       if (cancelledRef.current) return;
-      if (!grouped.length) {
-        setError("The model did not return usable questions. Try again.");
-        setStep("error");
+      if (!found.length) {
+        setError("Couldn't come up with questions for this role. Try again.");
+        setStatus("error");
         return;
       }
-      setAreaItems(
-        grouped.map((group) => ({
-          ...group,
-          questions: group.questions.map((question) => ({
-            ...question,
-            // per-question runtime state
-            choice: null, // single-select answer
-            choices: [], // multi-select answers (tools)
-            usingCustom: false,
-            customAnswer: "",
-            skipped: false,
-          })),
-          // per-area runtime state
-          proposal: "",
-          proposalStatus: "idle", // "idle" | "loading" | "ready" | "error"
-          proposalError: "",
-          resolution: null, // "accepted" | "rejected"
-        }))
-      );
-      setStep("questions");
+      setQuestions(withRuntimeState(found));
+      setRound(1);
+      setStatus("answering");
     } catch (err) {
       if (cancelledRef.current) return;
-      setError(err instanceof Error ? err.message : "Could not build questions for those areas.");
-      setStep("error");
+      setError(err instanceof Error ? err.message : "Could not start the questions.");
+      setStatus("error");
     }
   };
 
-  const updateArea = (area, patch) => {
-    setAreaItems((current) =>
-      current.map((item) => (item.area === area ? { ...item, ...patch } : item))
-    );
+  const runFollowups = async (currentTranscript, nextRound) => {
+    retryRef.current = () => runFollowups(currentTranscript, nextRound);
+    setStatus("loading");
+    setLoadingKind("followups");
+    setError("");
+    try {
+      const result = await loadFollowups({
+        position,
+        company,
+        description,
+        tenureLabel,
+        transcript: currentTranscript,
+        round: nextRound,
+      });
+      if (cancelledRef.current) return;
+      // Model says it knows enough, or the batch came back empty — write it up.
+      if (result.enough || !result.questions.length) {
+        runCompose(currentTranscript);
+        return;
+      }
+      setQuestions(withRuntimeState(result.questions));
+      setRound(nextRound);
+      setStatus("answering");
+    } catch (err) {
+      if (cancelledRef.current) return;
+      setError(err instanceof Error ? err.message : "Could not come up with more questions.");
+      setStatus("error");
+    }
   };
 
-  const updateQuestion = (area, questionId, patch) => {
-    setAreaItems((current) =>
-      current.map((item) => {
-        if (item.area !== area) return item;
-        return {
-          ...item,
-          questions: item.questions.map((question) =>
-            question.id === questionId ? { ...question, ...patch } : question
-          ),
-        };
-      })
+  const runCompose = async (finalTranscript) => {
+    retryRef.current = () => runCompose(finalTranscript);
+    setStatus("loading");
+    setLoadingKind("compose");
+    setError("");
+    try {
+      const composed = await composeBullets({
+        position,
+        company,
+        description,
+        tenureLabel,
+        transcript: finalTranscript,
+      });
+      if (cancelledRef.current) return;
+      if (!composed.length) {
+        setError("Couldn't write anything from those answers. Answer a bit more, then try again.");
+        setStatus("error");
+        return;
+      }
+      setBullets(composed.map((text) => ({ text, resolution: null })));
+      setStatus("review");
+    } catch (err) {
+      if (cancelledRef.current) return;
+      setError(err instanceof Error ? err.message : "Could not write up your answers.");
+      setStatus("error");
+    }
+  };
+
+  const retry = () => {
+    retryRef.current?.();
+  };
+
+  const updateQuestion = (questionId, patch) => {
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === questionId ? { ...question, ...patch } : question
+      )
     );
   };
 
   // Functional update so rapid toggles never overwrite each other with a stale list.
-  const toggleQuestionChoice = (area, questionId, option) => {
-    setAreaItems((current) =>
-      current.map((item) => {
-        if (item.area !== area) return item;
-        return {
-          ...item,
-          questions: item.questions.map((question) => {
-            if (question.id !== questionId) return question;
-            const choices = question.choices.includes(option)
-              ? question.choices.filter((entry) => entry !== option)
-              : [...question.choices, option];
-            return { ...question, choices, skipped: false, usingCustom: false };
-          }),
-        };
+  const toggleQuestionChoice = (questionId, option) => {
+    setQuestions((current) =>
+      current.map((question) => {
+        if (question.id !== questionId) return question;
+        const choices = question.choices.includes(option)
+          ? question.choices.filter((entry) => entry !== option)
+          : [...question.choices, option];
+        return { ...question, choices, skipped: false, usingCustom: false };
       })
     );
   };
 
-  const collectAnswers = (item) =>
-    item.questions
-      .map((question) => {
-        if (question.skipped) return null;
-        if (question.usingCustom && question.customAnswer.trim()) {
-          return { question: question.question, answer: question.customAnswer.trim() };
-        }
-        if (question.multiSelect && question.choices.length) {
-          return { question: question.question, answer: question.choices.join(", ") };
-        }
-        if (!question.multiSelect && question.choice) {
-          return { question: question.question, answer: question.choice };
-        }
-        return null;
-      })
-      .filter(Boolean);
+  const answeredThisRound = collectAnswers(questions);
+  const sessionHasAnswer = transcript.length > 0 || answeredThisRound.length > 0;
 
-  const handleCompose = async (item) => {
-    const answers = collectAnswers(item);
-    if (!answers.length) return;
-
-    updateArea(item.area, {
-      proposal: "",
-      proposalStatus: "loading",
-      proposalError: "",
-      resolution: null,
-    });
-
-    try {
-      const proposal = await composeBullet({ position, area: item.area, answers });
-      if (cancelledRef.current) return;
-      if (!proposal) {
-        updateArea(item.area, {
-          proposalStatus: "error",
-          proposalError: "The model did not return a detail. Try adjusting your answers.",
-        });
-        return;
-      }
-      updateArea(item.area, { proposal, proposalStatus: "ready" });
-    } catch (err) {
-      if (cancelledRef.current) return;
-      updateArea(item.area, {
-        proposalStatus: "error",
-        proposalError: err instanceof Error ? err.message : "Could not write a detail.",
-      });
+  const handleContinue = () => {
+    if (!answeredThisRound.length) return;
+    const nextTranscript = [...transcript, ...answeredThisRound];
+    setTranscript(nextTranscript);
+    if (round >= MAX_QA_ROUNDS) {
+      runCompose(nextTranscript);
+    } else {
+      runFollowups(nextTranscript, round + 1);
     }
   };
 
-  const handleAccept = (item) => {
-    onAcceptBullet(item.proposal);
-    updateArea(item.area, { resolution: "accepted" });
+  const handleWriteUpNow = () => {
+    const nextTranscript = answeredThisRound.length
+      ? [...transcript, ...answeredThisRound]
+      : transcript;
+    setTranscript(nextTranscript);
+    runCompose(nextTranscript);
   };
 
-  const handleReject = (item) => {
-    updateArea(item.area, { resolution: "rejected" });
+  const handleAskMore = () => {
+    runFollowups(transcript, Math.min(round + 1, MAX_QA_ROUNDS));
   };
+
+  const handleAcceptBullet = (index) => {
+    onAcceptBullet(bullets[index].text);
+    setBullets((current) =>
+      current.map((bullet, i) => (i === index ? { ...bullet, resolution: "accepted" } : bullet))
+    );
+  };
+
+  const handleRejectBullet = (index) => {
+    setBullets((current) =>
+      current.map((bullet, i) => (i === index ? { ...bullet, resolution: "rejected" } : bullet))
+    );
+  };
+
+  const loadingCopy =
+    loadingKind === "opening"
+      ? "Reviewing your current experience details…"
+      : loadingKind === "followups"
+        ? "Creating followup questions…"
+        : "Writing this up from your answers…";
+
+  const allBulletsResolved =
+    bullets.length > 0 && bullets.every((bullet) => bullet.resolution);
+  const anyAccepted = bullets.some((bullet) => bullet.resolution === "accepted");
 
   return (
-    <div className="mt-3 rounded-lg border border-violet-500/40 bg-violet-500/5 p-3">
+    <div
+      ref={panelRef}
+      className="mt-3 scroll-my-24 rounded-lg border border-violet-500/40 bg-violet-500/5 p-3"
+    >
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-widest text-violet-600 dark:text-violet-300">
-          Add details
+        <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-widest text-violet-600 dark:text-violet-300">
+          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fillRule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clipRule="evenodd" />
+          </svg>
+          Expand experience
         </p>
         <button
           type="button"
@@ -221,221 +268,185 @@ export function EnrichExperience({
         </button>
       </div>
 
-      {step === "areas-loading" && (
-        <p className="mt-2 text-sm text-neutral-400">
-          Looking up what jobs with this title usually involve...
-        </p>
+      {status === "loading" && (
+        <p className="mt-2 animate-pulse text-sm text-neutral-400">{loadingCopy}</p>
       )}
 
-      {step === "error" && <p className="mt-2 text-sm text-red-400">{error}</p>}
-
-      {step === "areas-empty" && (
-        <p className="mt-2 text-sm text-neutral-400">
-          Nothing to add — this description already covers what postings for this title ask for.
-        </p>
+      {status === "error" && (
+        <div className="mt-2">
+          <p className="text-sm text-red-400">{error}</p>
+          <button
+            type="button"
+            onClick={retry}
+            className="mt-3 rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800"
+          >
+            Try again
+          </button>
+        </div>
       )}
 
-      {step === "areas" && (
+      {status === "answering" && (
         <>
-          <p className="mt-3 text-sm font-medium text-neutral-200">
-            Jobs titled “{position?.trim() || "this role"}” usually include these responsibilities.
-            Which were part of your role{company?.trim() ? ` at ${company.trim()}` : ""}?
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {areas.map((entry) => {
-              const active = selectedAreaIds.includes(entry.id);
-              const atCap = !active && selectedAreaIds.length >= MAX_ENRICH_AREAS_PER_ROUND;
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => toggleArea(entry.id)}
-                  disabled={atCap}
-                  title={entry.whyEmployersAsk || undefined}
-                  className={`${chipClass(active)} disabled:cursor-not-allowed disabled:opacity-40`}
-                >
-                  {entry.area}
-                </button>
-              );
-            })}
+          <div className="mt-3 space-y-4">
+            {questions.map((question) => (
+              <div key={question.id}>
+                <p className="text-sm font-medium text-neutral-200">
+                  {question.question}
+                  {question.multiSelect && (
+                    <span className="ml-1.5 text-xs font-normal text-neutral-500">
+                      Select all that apply.
+                    </span>
+                  )}
+                </p>
+                {question.helper && (
+                  <p className="mt-0.5 text-xs text-neutral-500">{question.helper}</p>
+                )}
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  {question.options.map((option, index) => {
+                    const active = question.multiSelect
+                      ? question.choices.includes(option)
+                      : !question.usingCustom && question.choice === option;
+                    return (
+                      <button
+                        key={index}
+                        type="button"
+                        onClick={() =>
+                          question.multiSelect
+                            ? toggleQuestionChoice(question.id, option)
+                            : updateQuestion(question.id, {
+                                choice: option,
+                                usingCustom: false,
+                                skipped: false,
+                              })
+                        }
+                        className={chipClass(active)}
+                      >
+                        {option}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateQuestion(question.id, { usingCustom: true, skipped: false })
+                    }
+                    className={chipClass(question.usingCustom)}
+                  >
+                    Something else…
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateQuestion(question.id, {
+                        skipped: true,
+                        usingCustom: false,
+                        choice: null,
+                        choices: [],
+                      })
+                    }
+                    className={chipClass(question.skipped)}
+                  >
+                    Skip
+                  </button>
+                </div>
+                {question.usingCustom && (
+                  <input
+                    type="text"
+                    value={question.customAnswer}
+                    onChange={(e) =>
+                      updateQuestion(question.id, { customAnswer: e.target.value })
+                    }
+                    placeholder="In your own words..."
+                    className="mt-2 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+                  />
+                )}
+              </div>
+            ))}
           </div>
-          <p className="mt-2 text-xs text-neutral-500">
-            Pick up to {MAX_ENRICH_AREAS_PER_ROUND} at a time. Hover a chip to see why employers ask
-            about it.
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={handleContinue}
-              disabled={!selectedAreaIds.length}
+              disabled={!answeredThisRound.length}
               className="rounded-lg border border-violet-500/50 bg-violet-500/15 px-3 py-2 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-50 dark:text-violet-200"
             >
-              Continue
+              {round >= MAX_QA_ROUNDS ? "Write it up" : "Continue"}
             </button>
             <button
               type="button"
-              onClick={onClose}
-              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+              onClick={handleWriteUpNow}
+              disabled={!sessionHasAnswer}
+              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              None of these apply
+              Write it up now
             </button>
           </div>
         </>
       )}
 
-      {step === "questions-loading" && (
-        <p className="mt-2 text-sm text-neutral-400">
-          Writing a few quick questions about that work...
-        </p>
-      )}
+      {status === "review" && (
+        <div className="mt-3 space-y-3">
+          <p className="text-sm font-medium text-neutral-200">
+            Here's what I heard — add what fits.
+          </p>
 
-      {step === "questions" && (
-        <div className="mt-3 space-y-4">
-          {areaItems.map((item) => {
-            const answerCount = collectAnswers(item).length;
-
-            return (
+          {bullets.map((bullet, index) =>
+            bullet.resolution === "accepted" ? (
+              <p key={index} className="text-sm text-emerald-500 dark:text-emerald-400">
+                ✓ Added “{bullet.text}”
+              </p>
+            ) : bullet.resolution === "rejected" ? (
+              <p key={index} className="text-sm text-neutral-500">
+                Skipped “{bullet.text}”
+              </p>
+            ) : (
               <div
-                key={item.area}
-                className="rounded-lg border border-neutral-800 bg-neutral-950/50 p-3"
+                key={index}
+                className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-3"
               >
-                <p className="text-sm font-semibold text-neutral-200">{item.area}</p>
-
-                {item.resolution === "accepted" ? (
-                  <p className="mt-2 text-sm text-emerald-500 dark:text-emerald-400">
-                    ✓ Added “{item.proposal}”
-                  </p>
-                ) : item.resolution === "rejected" ? (
-                  <p className="mt-2 text-sm text-neutral-500">Skipped this detail.</p>
-                ) : (
-                  <>
-                    <div className="mt-2 space-y-3">
-                      {item.questions.map((question) => (
-                        <div key={question.id}>
-                          <p className="text-sm font-medium text-neutral-200">
-                            {question.question}
-                            {question.multiSelect && (
-                              <span className="ml-1.5 text-xs font-normal text-neutral-500">
-                                Select all that apply.
-                              </span>
-                            )}
-                          </p>
-                          <div className="mt-1.5 flex flex-wrap gap-2">
-                            {question.options.map((option, index) => {
-                              const active = question.multiSelect
-                                ? question.choices.includes(option)
-                                : !question.usingCustom && question.choice === option;
-                              return (
-                                <button
-                                  key={index}
-                                  type="button"
-                                  onClick={() =>
-                                    question.multiSelect
-                                      ? toggleQuestionChoice(item.area, question.id, option)
-                                      : updateQuestion(item.area, question.id, {
-                                          choice: option,
-                                          usingCustom: false,
-                                          skipped: false,
-                                        })
-                                  }
-                                  className={chipClass(active)}
-                                >
-                                  {option}
-                                </button>
-                              );
-                            })}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateQuestion(item.area, question.id, {
-                                  usingCustom: true,
-                                  skipped: false,
-                                })
-                              }
-                              className={chipClass(question.usingCustom)}
-                            >
-                              Something else…
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateQuestion(item.area, question.id, {
-                                  skipped: true,
-                                  usingCustom: false,
-                                  choice: null,
-                                  choices: [],
-                                })
-                              }
-                              className={chipClass(question.skipped)}
-                            >
-                              Skip
-                            </button>
-                          </div>
-                          {question.usingCustom && (
-                            <input
-                              type="text"
-                              value={question.customAnswer}
-                              onChange={(e) =>
-                                updateQuestion(item.area, question.id, {
-                                  customAnswer: e.target.value,
-                                })
-                              }
-                              placeholder="In your own words..."
-                              className="mt-2 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleCompose(item)}
-                      disabled={!answerCount || item.proposalStatus === "loading"}
-                      className="mt-3 rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Write this detail
-                    </button>
-
-                    {item.proposalStatus === "loading" && (
-                      <p className="mt-2 text-sm text-neutral-400">
-                        Writing a detail from your answers...
-                      </p>
-                    )}
-
-                    {item.proposalStatus === "error" && (
-                      <p className="mt-2 text-sm text-red-400">{item.proposalError}</p>
-                    )}
-
-                    {item.proposalStatus === "ready" && (
-                      <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/70 p-3">
-                        <p className="text-xs uppercase tracking-widest text-neutral-500">
-                          Suggested detail
-                        </p>
-                        <p className="mt-1 text-sm text-neutral-100">{item.proposal}</p>
-                        <div className="mt-3 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleAccept(item)}
-                            className="rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/25 dark:text-emerald-200"
-                          >
-                            Add to description
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleReject(item)}
-                            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
-                          >
-                            Skip
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
+                <p className="text-xs uppercase tracking-widest text-neutral-500">
+                  Suggested detail
+                </p>
+                <p className="mt-1 text-sm text-neutral-100">{bullet.text}</p>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleAcceptBullet(index)}
+                    className="rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/25 dark:text-emerald-200"
+                  >
+                    Add to description
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRejectBullet(index)}
+                    className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+                  >
+                    Skip
+                  </button>
+                </div>
               </div>
-            );
-          })}
+            )
+          )}
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {round < MAX_QA_ROUNDS && (
+              <button
+                type="button"
+                onClick={handleAskMore}
+                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+              >
+                Ask me a bit more
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+            >
+              {allBulletsResolved ? (anyAccepted ? "Done" : "Close") : "Close"}
+            </button>
+          </div>
         </div>
       )}
     </div>
