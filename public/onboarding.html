@@ -231,16 +231,27 @@ html,body{margin:0;padding:0;background:#fff}
 .cf-opts{display:flex;gap:7px}
 .cf-opt{
   flex:1;text-align:left;background:#fff;border:1.5px solid var(--border);border-radius:9px;
-  padding:8px 10px;font-size:11.5px;font-weight:600;color:var(--ink);transition:all .2s;line-height:1.25;
+  padding:8px 10px;font-size:11.5px;font-weight:600;color:var(--ink);
+  transition:border-color .2s,background .2s;line-height:1.25;
+  box-shadow:0 0 0 10px transparent;
 }
 .cf-opt .src{display:block;font-size:9px;color:var(--muted);font-weight:600;margin-top:2px}
 .cf-opt:hover{border-color:var(--blue);background:var(--blue-soft)}
-.cf-opt.picked{border-color:var(--green);background:var(--green-soft)}
+.cf-opt.picked{border-color:var(--green);background:var(--green-soft);animation:pickEcho .55s ease-out forwards}
 .cf-opt.faded{opacity:.4}
-.cf-tag{
-  display:none;align-items:center;gap:6px;margin-top:9px;color:var(--green);font-size:11.5px;font-weight:700;
+@keyframes pickEcho{
+  0%{box-shadow:0 0 0 0 rgba(14,159,110,.45)}
+  100%{box-shadow:0 0 0 10px transparent}
 }
-.conflict.resolved .cf-tag{display:inline-flex;animation:revealUp .4s both}
+.cf-tag{
+  display:flex;align-items:center;gap:6px;color:var(--green);font-size:11.5px;font-weight:700;
+  max-height:0;margin-top:0;opacity:0;overflow:hidden;transform:translateY(6px);pointer-events:none;
+  transition:max-height .35s ease,margin-top .35s ease,opacity .35s ease,transform .35s ease;
+}
+.conflict.resolved .cf-tag{
+  max-height:28px;margin-top:9px;opacity:1;transform:none;
+  transition-delay:.4s;
+}
 .conflict.resolved .cf-q{opacity:.5}
 
 /* ---- Scene: clarity ---- */
@@ -280,68 +291,131 @@ html,body{margin:0;padding:0;background:#fff}
 .ca-reject{background:#fff;color:var(--body);border-color:var(--border)}
 .ca-reject:hover{border-color:var(--red);color:var(--red)}
 
-/* ---- Scene: expand (timeline + travelling dots) ---- */
-.s-expand .tl{position:relative;width:300px;height:210px;text-align:left}
-.tl-svg{position:absolute;left:12px;top:8px;height:194px;width:26px;overflow:visible}
-.tl-svg path{stroke:var(--blue-100);stroke-width:2;fill:none}
-.tl-node{position:absolute;left:14px;width:12px;height:12px;border-radius:50%;background:#fff;border:3px solid var(--blue);transform:translateX(-50%)}
-.tl-row{position:absolute;left:40px;right:0;display:flex;flex-direction:column;gap:3px}
-.tl-role{font-size:12.5px;font-weight:700;color:var(--ink)}
-.tl-detail{
-  display:inline-flex;align-items:center;gap:6px;align-self:flex-start;
-  font-size:11px;font-weight:600;color:var(--ink);background:#fff;
-  border:1px solid var(--blue-100);border-radius:999px;padding:4px 10px;box-shadow:var(--shadow-sm);
-  opacity:0;
+/* ---- Scene: expand (Q&A interview → composed bullet) ---- */
+.s-expand .xq{width:300px;text-align:left}
+.xq-role{
+  background:#fff;border:1px solid var(--border);border-radius:12px 12px 0 0;
+  padding:11px 14px 10px;border-bottom:none;
 }
-.tl-detail .b{width:6px;height:6px;border-radius:2px;flex-shrink:0}
-.slide.is-active .tl-detail{animation:bloom .5s cubic-bezier(.2,.7,.3,1) both}
-.slide.is-active .r1 .tl-detail{animation-delay:.6s}
-.slide.is-active .r2 .tl-detail{animation-delay:1.25s}
-.slide.is-active .r3 .tl-detail{animation-delay:1.9s}
+.xq-title{font-size:12.5px;font-weight:700;color:var(--ink)}
+.xq-thin{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.35}
+.xq-panel{
+  background:linear-gradient(180deg,#F7F5FF,#fff);border:1.5px solid #DDD6FE;
+  border-radius:0 0 14px 14px;box-shadow:var(--shadow-md);padding:12px 14px 14px;
+}
+.xq-label{
+  font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:#7C3AED;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px;
+}
+.xq-label svg{width:12px;height:12px}
+.xq-q{font-size:13px;font-weight:600;color:var(--ink);line-height:1.35}
+.xq-hint{font-size:10.5px;color:var(--muted);margin-top:2px;margin-bottom:9px}
+.xq-chips{display:flex;flex-wrap:wrap;gap:6px}
+.xq-chip{
+  font-size:11px;font-weight:600;color:var(--ink);background:#fff;
+  border:1.5px solid var(--border);border-radius:8px;padding:5px 9px;
+  opacity:0;transform:translateY(6px);
+}
+@keyframes chipIn{to{opacity:1;transform:none}}
+@keyframes chipPick{to{border-color:#8B5CF6;background:#EDE9FE;color:#5B21B6}}
+@keyframes xqFadeOut{to{opacity:0;filter:blur(3px);pointer-events:none}}
+/*
+  Hold fully-rendered (selected) state for screen-reading time at ~180 WPM
+  (typical for UI scan + decide): seconds = words / 180 * 60.
+  R1 ≈ 19 words → 6.3s hold after pick. R2 ≈ 17 words → 5.7s hold after last pick.
+*/
+/* Round 1 — pick project kind, then hold for reading */
+.slide.is-active .xq-r1 .c1{animation:chipIn .4s .27s both,chipPick 0s .9s forwards}
+.slide.is-active .xq-r1 .c2{animation:chipIn .4s .33s both}
+.slide.is-active .xq-r1 .c3{animation:chipIn .4s .39s both}
+.slide.is-active .xq-r1 .c4{animation:chipIn .4s .45s both}
+.slide.is-active .xq-r1{animation:xqFadeOut .35s 7.2s forwards}
+/* Round 2 — who worked that project with you */
+.slide.is-active .xq-r2{animation:swapIn .45s 7.4s both,xqFadeOut .35s 14.25s forwards}
+.slide.is-active .xq-r2 .d1{animation:chipIn .4s 7.65s both,chipPick 0s 8.2s forwards}
+.slide.is-active .xq-r2 .d2{animation:chipIn .4s 7.71s both,chipPick 0s 8.55s forwards}
+.slide.is-active .xq-r2 .d3{animation:chipIn .4s 7.77s both}
+.slide.is-active .xq-r2 .d4{animation:chipIn .4s 7.83s both}
+/* then swap to write-up */
+.xq-stage{position:relative;min-height:118px}
+.xq-r2,.xq-write{position:absolute;left:0;right:0;top:0;opacity:0}
+.slide.is-active .xq-write{animation:swapIn .5s 14.5s cubic-bezier(.2,.7,.3,1) both}
+.xq-write-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.xq-bullet{font-size:12.5px;font-weight:500;color:var(--ink);line-height:1.4}
+.xq-actions{display:flex;gap:8px;margin-top:12px;opacity:0}
+.slide.is-active .xq-actions{animation:swapIn .4s 14.75s both}
+
 @keyframes bloom{from{opacity:0;transform:translateX(-8px) scale(.9)}to{opacity:1;transform:none}}
 
-/* ---- Scene: gaps (match report + score ring) ---- */
-.s-gaps .report{width:300px;background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-md);padding:16px;text-align:left}
-.rp-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
-.rp-title{font-size:13px;font-weight:700;color:var(--ink)}
-.rp-sub{font-size:11px;color:var(--muted)}
-.ring{position:relative;width:62px;height:62px;flex-shrink:0}
-.ring svg{transform:rotate(-90deg)}
-.ring .bgc{stroke:#EAEFF9;fill:none;stroke-width:6}
-.ring .fgc{stroke:var(--green);fill:none;stroke-width:6;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:52.3;transition:stroke-dashoffset 1.5s cubic-bezier(.3,.7,.3,1)}
-.slide.is-active .ring .fgc{stroke-dashoffset:9.8}
-.ring-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--ink);font-variant-numeric:tabular-nums}
-.req{display:flex;align-items:center;gap:9px;border:1.5px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:7px;font-size:12px;font-weight:600;color:var(--ink);transition:all .8s;background:#fff}
-.req:last-child{margin-bottom:0}
-.req .st{width:19px;height:19px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:10px;font-weight:800;transition:all .8s}
-.req.ok{border-color:#C4EBDA}
-.req.ok .st{background:var(--green-soft);color:var(--green)}
-.req .fix{margin-left:auto;font-size:10px;font-weight:700;color:var(--amber);white-space:nowrap;transition:opacity .5s}
-/* warn rows flip to ok while active */
-.req.flip{border-color:#F0D9B5;background:#FFFDF8}
-.req.flip .st{background:var(--amber-soft);color:var(--amber)}
-.slide.is-active .req.flip{animation:reqOk 0s forwards}
-.slide.is-active .req.f1{animation-delay:1s}
-.slide.is-active .req.f2{animation-delay:1.85s}
-@keyframes reqOk{to{border-color:#C4EBDA;background:#fff}}
-.slide.is-active .req.flip .st{animation:stOk 0s forwards}
-.slide.is-active .req.f1 .st{animation-delay:1s}
-.slide.is-active .req.f2 .st{animation-delay:1.85s}
-@keyframes stOk{to{background:var(--green-soft);color:var(--green)}}
-.slide.is-active .req.flip .fix{animation:fixHide 0s forwards}
-.slide.is-active .req.f1 .fix{animation-delay:1s}
-.slide.is-active .req.f2 .fix{animation-delay:1.85s}
-@keyframes fixHide{to{opacity:0}}
-/* icon swap ! -> check when a gap is resolved */
-.req.flip .st{position:relative}
-.req.flip .st .g{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
-.req.flip .st .g2{opacity:0}
-.slide.is-active .req.f1 .g1{animation:hideG 0s 1s forwards}
-.slide.is-active .req.f1 .g2{animation:showG 0s 1s forwards}
-.slide.is-active .req.f2 .g1{animation:hideG 0s 1.85s forwards}
-.slide.is-active .req.f2 .g2{animation:showG 0s 1.85s forwards}
-@keyframes hideG{to{opacity:0}}
-@keyframes showG{to{opacity:1}}
+/* ---- Scene: gaps (JD vs experience → mismatch questions) ---- */
+.s-gaps .gap{width:300px;text-align:left}
+.gap-role{
+  background:#fff;border:1px solid var(--border);border-radius:12px 12px 0 0;
+  padding:11px 14px 10px;border-bottom:none;
+}
+.gap-title{font-size:12.5px;font-weight:700;color:var(--ink)}
+.gap-thin{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.35}
+.gap-panel{
+  background:linear-gradient(180deg,#FFF9F0,#fff);border:1.5px solid #F0D9B5;
+  border-radius:0 0 14px 14px;box-shadow:var(--shadow-md);padding:12px 14px 14px;
+}
+.gap-stage{position:relative;min-height:148px}
+.gap-scan,.gap-ask,.gap-write{position:absolute;left:0;right:0;top:0}
+.gap-ask,.gap-write{opacity:0}
+.gap-label{
+  font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--amber);display:inline-flex;align-items:center;gap:5px;margin-bottom:8px;
+}
+.gap-cols{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.gap-col{
+  background:#fff;border:1px solid var(--border);border-radius:10px;padding:9px 10px;
+}
+.gap-col-h{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+.gap-item{
+  display:flex;align-items:flex-start;gap:6px;font-size:11px;font-weight:600;color:var(--ink);
+  line-height:1.3;margin-bottom:5px;
+}
+.gap-item:last-child{margin-bottom:0}
+.gap-item .gi{
+  width:14px;height:14px;border-radius:50%;flex-shrink:0;margin-top:1px;
+  display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:800;
+}
+.gap-item.ok .gi{background:var(--green-soft);color:var(--green)}
+.gap-item.miss .gi{background:var(--amber-soft);color:var(--amber)}
+.gap-item.miss{color:var(--amber)}
+.gap-item.blank{color:var(--muted);font-weight:500}
+.gap-item.blank .gi{background:var(--bg-soft);color:var(--muted);border:1px solid var(--border)}
+.slide.is-active .gap-scan{animation:xqFadeOut .35s 2.4s forwards}
+.slide.is-active .gap-item.miss{animation:missPulse 1.2s .5s ease both}
+@keyframes missPulse{
+  0%,100%{background:transparent;border-radius:6px}
+  40%{background:var(--amber-soft)}
+}
+.gap-kind{
+  display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);background:var(--bg-soft);border:1px solid var(--border);border-radius:999px;
+  padding:2px 8px;margin-bottom:7px;
+}
+.gap-q{font-size:13px;font-weight:600;color:var(--ink);line-height:1.35}
+.gap-why{font-size:10.5px;color:var(--muted);margin-top:4px;margin-bottom:10px;line-height:1.35}
+.gap-btns{display:flex;gap:7px}
+.gap-yes,.gap-no{
+  flex:1;font-weight:700;font-size:12px;border-radius:9px;padding:8px 12px;
+  border:1.5px solid var(--border);background:#fff;color:var(--ink);transition:all .18s;
+}
+.gap-yes{border-color:var(--border)}
+.slide.is-active .gap-ask{animation:swapIn .45s 2.6s both,xqFadeOut .35s 5.6s forwards}
+.slide.is-active .gap-yes{animation:gapYesPick 0s 3.5s forwards}
+@keyframes gapYesPick{to{border-color:var(--green);background:var(--green-soft);color:var(--green)}}
+.slide.is-active .gap-no{animation:gapNoFade 0s 3.5s forwards}
+@keyframes gapNoFade{to{opacity:.35}}
+.gap-write-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.gap-bullet{font-size:12.5px;font-weight:500;color:var(--ink);line-height:1.4}
+.gap-added{
+  display:inline-flex;align-items:center;gap:5px;margin-top:8px;
+  font-size:11px;font-weight:700;color:var(--green);
+}
+.slide.is-active .gap-write{animation:swapIn .5s 5.85s cubic-bezier(.2,.7,.3,1) both}
 
 /* ---- Scene: generate (pdf) ---- */
 .s-generate .pdf{position:relative;width:230px}
@@ -414,9 +488,10 @@ html,body{margin:0;padding:0;background:#fff}
   .clar-crisp{display:block}
   .flag-before{display:none}
   .flag-after{opacity:1}
-  .req.flip .g1{display:none}
-  .req.flip .g2{opacity:1}
-  .conflict,.merged,.tl-detail,.ats-chip,.dl-btn,.ghost,.job-card{opacity:1!important}
+  .conflict,.merged,.xq-chip,.xq-write,.xq-actions,.ats-chip,.dl-btn,.ghost,.job-card,.gap-write{opacity:1!important}
+  .xq-r1,.xq-r2,.gap-scan,.gap-ask{opacity:0!important;pointer-events:none}
+  .xq-write,.gap-write{position:relative}
+  .gap-yes{border-color:var(--green)!important;background:var(--green-soft)!important;color:var(--green)!important}
 }
 
 /* ---------- small screens ---------- */
@@ -527,60 +602,99 @@ html,body{margin:0;padding:0;background:#fff}
       <!-- 3 &middot; EXPAND -->
       <section class="slide s-expand">
         <div class="viz">
-          <div class="tl">
-            <svg class="tl-svg" viewBox="0 0 26 194" preserveAspectRatio="none" aria-hidden="true">
-              <path d="M13 6 L13 188"/>
-              <circle r="4" fill="#2D5BE3">
-                <animateMotion dur="3.2s" repeatCount="indefinite" path="M13 6 L13 188"/>
-              </circle>
-              <circle r="4" fill="#2D5BE3" opacity=".6">
-                <animateMotion dur="3.2s" begin="1.6s" repeatCount="indefinite" path="M13 6 L13 188"/>
-              </circle>
-            </svg>
-            <span class="tl-node" style="top:16px"></span>
-            <span class="tl-node" style="top:96px"></span>
-            <span class="tl-node" style="top:168px"></span>
-            <div class="tl-row r1" style="top:6px">
-              <div class="tl-role">Senior PM &middot; Novara Health</div>
-              <span class="tl-detail"><span class="b" style="background:#2D5BE3"></span>Led a HIPAA compliance project</span>
+          <div class="xq">
+            <div class="xq-role">
+              <div class="xq-title">Senior PM &middot; Novara Health</div>
+              <div class="xq-thin">Led product work for the compliance team.</div>
             </div>
-            <div class="tl-row r2" style="top:86px">
-              <div class="tl-role">Product Manager &middot; DataCore</div>
-              <span class="tl-detail"><span class="b" style="background:#0E9F6E"></span>Mentored two junior designers</span>
-            </div>
-            <div class="tl-row r3" style="top:158px">
-              <div class="tl-role">Analyst &middot; Fieldstone</div>
-              <span class="tl-detail"><span class="b" style="background:#8B5CF6"></span>Built the first analytics stack</span>
+            <div class="xq-panel">
+              <div class="xq-label">
+                <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clip-rule="evenodd"/></svg>
+                Expand experience
+              </div>
+              <div class="xq-stage">
+                <div class="xq-ask xq-r1">
+                  <div class="xq-q">What kind of projects do you most frequently work on?</div>
+                  <div class="xq-chips">
+                    <span class="xq-chip c1">HIPAA compliance</span>
+                    <span class="xq-chip c2">Patient portal launch</span>
+                    <span class="xq-chip c3">Analytics rollout</span>
+                    <span class="xq-chip c4">Vendor migration</span>
+                  </div>
+                </div>
+                <div class="xq-ask xq-r2">
+                  <div class="xq-q">Who do you work with that on?</div>
+                  <div class="xq-hint">Select all that apply.</div>
+                  <div class="xq-chips">
+                    <span class="xq-chip d1">Clinical teams</span>
+                    <span class="xq-chip d2">Legal</span>
+                    <span class="xq-chip d3">Engineering</span>
+                    <span class="xq-chip d4">Leadership</span>
+                  </div>
+                </div>
+                <div class="xq-write">
+                  <div class="xq-write-label">Suggested detail</div>
+                  <div class="xq-bullet">Led a HIPAA compliance project with clinical and legal teams</div>
+                  <div class="xq-actions">
+                    <button class="ca-accept">&#10003; Accept</button>
+                    <button class="ca-reject">Reject</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
         <div class="copy">
           <span class="eyebrow reveal" style="--d:.05s"><span class="step">Step 3</span>Expand experience</span>
           <h2 class="reveal" style="--d:.12s">Fill in the wins you left out.</h2>
-          <p class="reveal" style="--d:.2s">Walk your timeline and we surface the wins, skills, and people you forgot to write down.</p>
+          <p class="reveal" style="--d:.2s">Answer a few quick questions and we write up the wins, skills, and people you forgot to mention.</p>
         </div>
       </section>
 
       <!-- 4 &middot; GAPS -->
       <section class="slide s-gaps">
         <div class="viz">
-          <div class="report">
-            <div class="rp-head">
-              <div>
-                <div class="rp-title">Match report</div>
-                <div class="rp-sub">Senior PM &middot; Meridian Health</div>
-              </div>
-              <div class="ring">
-                <svg width="62" height="62" viewBox="0 0 62 62">
-                  <circle class="bgc" cx="31" cy="31" r="26"></circle>
-                  <circle class="fgc" cx="31" cy="31" r="26"></circle>
-                </svg>
-                <div class="ring-num" id="ringNum">68%</div>
+          <div class="gap">
+            <div class="gap-role">
+              <div class="gap-title">Senior PM &middot; Meridian Health</div>
+              <div class="gap-thin">Reading the job against your work history</div>
+            </div>
+            <div class="gap-panel">
+              <div class="gap-stage">
+                <div class="gap-scan">
+                  <div class="gap-label">Comparing</div>
+                  <div class="gap-cols">
+                    <div class="gap-col">
+                      <div class="gap-col-h">Job asks for</div>
+                      <div class="gap-item ok"><span class="gi">&#10003;</span>Product leadership</div>
+                      <div class="gap-item miss"><span class="gi">!</span>PMP certification</div>
+                      <div class="gap-item miss"><span class="gi">!</span>SQL &amp; analytics</div>
+                    </div>
+                    <div class="gap-col">
+                      <div class="gap-col-h">You have listed</div>
+                      <div class="gap-item ok"><span class="gi">&#10003;</span>Led a team of 6</div>
+                      <div class="gap-item blank"><span class="gi">&ndash;</span>Not listed yet</div>
+                      <div class="gap-item blank"><span class="gi">&ndash;</span>Not listed yet</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="gap-ask">
+                  <div class="gap-label">Gap found</div>
+                  <span class="gap-kind">Certification</span>
+                  <div class="gap-q">Do you have a PMP certification?</div>
+                  <div class="gap-why">The posting lists PMP as preferred.</div>
+                  <div class="gap-btns">
+                    <button class="gap-yes" type="button">Yes</button>
+                    <button class="gap-no" type="button">No</button>
+                  </div>
+                </div>
+                <div class="gap-write">
+                  <div class="gap-write-label">Added to your profile</div>
+                  <div class="gap-bullet">PMP certified</div>
+                  <div class="gap-added">&#10003; Gap filled from your real experience</div>
+                </div>
               </div>
             </div>
-            <div class="req ok"><span class="st">&#10003;</span>5+ years product management</div>
-            <div class="req flip f1"><span class="st"><span class="g g1">!</span><span class="g g2">&#10003;</span></span>Healthcare experience<span class="fix">add evidence</span></div>
-            <div class="req flip f2"><span class="st"><span class="g g1">!</span><span class="g g2">&#10003;</span></span>SQL &amp; analytics<span class="fix">add evidence</span></div>
           </div>
         </div>
         <div class="copy">
@@ -667,7 +781,6 @@ html,body{margin:0;padding:0;background:#fff}
   var back = root.querySelector('#obBack');
   var next = root.querySelector('#obNext');
   var skip = root.querySelector('#obSkip');
-  var ringNum = root.querySelector('#ringNum');
   var conflict = root.querySelector('#conflict');
   var reduce = window.matchMedia('(prefers-reduced-motion:reduce)').matches;
   var i = 0, N = slides.length, timers = [], done = false;
@@ -697,20 +810,6 @@ html,body{margin:0;padding:0;background:#fff}
 
   function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
 
-  function countRing(){
-    if(!ringNum) return;
-    if(reduce){ ringNum.textContent = '94%'; return; }
-    var start = 68, end = 94, t0 = null, dur = 1500;
-    function frame(ts){
-      if(t0===null) t0 = ts;
-      var p = Math.min((ts - t0)/dur, 1);
-      var eased = 1 - Math.pow(1-p, 3);
-      ringNum.textContent = Math.round(start + (end-start)*eased) + '%';
-      if(p < 1) requestAnimationFrame(frame);
-    }
-    requestAnimationFrame(frame);
-  }
-
   function resetConflict(){
     if(!conflict) return;
     conflict.classList.remove('resolved');
@@ -732,7 +831,6 @@ html,body{margin:0;padding:0;background:#fff}
 
   function onEnter(idx){
     var s = slides[idx];
-    if(s.classList.contains('s-gaps')) timers.push(setTimeout(countRing, reduce?0:1350));
     if(s.classList.contains('s-import')){
       resetConflict();
       // auto-resolve the conflict if the user doesn't tap it
