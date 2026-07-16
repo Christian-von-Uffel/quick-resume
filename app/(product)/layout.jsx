@@ -1,7 +1,27 @@
 import "../../src/index.css";
 
 export const metadata = {
+  metadataBase: new URL("https://1Resume.app"),
   title: "One Resume",
+  description:
+    "Write about your experience once. 1Resume reads every job description and builds a tailored, ATS-ready resume from your story.",
+  openGraph: {
+    type: "website",
+    title: "1Resume — One resume. Tailored for every job.",
+    description:
+      "Write about your experience once. 1Resume reads every job description and builds a tailored, ATS-ready resume from your story.",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "1Resume — The last resume you'll ever write",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+  },
 };
 
 // Runs before first paint to avoid a light-to-dark flash. Light mode is the
