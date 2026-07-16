@@ -254,8 +254,8 @@ html,body{margin:0;padding:0;background:#fff}
   padding:3px 10px;border-radius:999px;background:var(--amber-soft);color:var(--amber);border:1px solid #F0D9B5;transition:all .5s;
 }
 .flag-after{background:var(--green);color:#fff;border-color:var(--green);opacity:0}
-.slide.is-active .flag-before{animation:fadeFlag 0s 1.7s forwards}
-.slide.is-active .flag-after{animation:swapIn .4s 1.7s both}
+.slide.is-active .flag-before{animation:fadeFlag 0s 3.2s forwards}
+.slide.is-active .flag-after{animation:swapIn .4s 3.2s both}
 @keyframes fadeFlag{to{opacity:0}}
 .clar-line{font-size:13.5px;color:var(--ink);line-height:1.45}
 .clar-vague{position:relative;display:inline}
@@ -266,14 +266,14 @@ html,body{margin:0;padding:0;background:#fff}
 .slide.is-active .clar-vague::after{animation:drawU .5s .4s ease forwards}
 @keyframes drawU{to{transform:scaleX(1)}}
 .clar-crisp{display:none}
-.slide.is-active .clar-vague{animation:swapOut .5s 1.5s ease forwards}
-.slide.is-active .clar-crisp{display:block;animation:swapIn .5s 1.7s cubic-bezier(.2,.7,.3,1) both}
+.slide.is-active .clar-vague{animation:swapOut .5s 3s ease forwards}
+.slide.is-active .clar-crisp{display:block;animation:swapIn .5s 3.2s cubic-bezier(.2,.7,.3,1) both}
 @keyframes swapOut{to{opacity:0;filter:blur(4px);position:absolute;pointer-events:none}}
 @keyframes swapIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.slide.is-active .clar-bullet{animation:toGreen 0s 1.7s forwards}
+.slide.is-active .clar-bullet{animation:toGreen 0s 3.2s forwards}
 @keyframes toGreen{to{background:var(--green-soft);border-color:#9FDFC6}}
 .clar-actions{display:flex;gap:8px;margin-top:12px;opacity:0}
-.slide.is-active .clar-actions{animation:swapIn .4s 1.95s both}
+.slide.is-active .clar-actions{animation:swapIn .4s 3.45s both}
 .ca-accept,.ca-reject{font-weight:700;font-size:12.5px;border-radius:9px;padding:8px 16px;border:1.5px solid transparent;transition:all .18s}
 .ca-accept{background:var(--green);color:#fff}
 .ca-accept:hover{background:#0C8A5F}
@@ -308,38 +308,38 @@ html,body{margin:0;padding:0;background:#fff}
 .ring{position:relative;width:62px;height:62px;flex-shrink:0}
 .ring svg{transform:rotate(-90deg)}
 .ring .bgc{stroke:#EAEFF9;fill:none;stroke-width:6}
-.ring .fgc{stroke:var(--green);fill:none;stroke-width:6;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:52.3;transition:stroke-dashoffset .95s cubic-bezier(.3,.7,.3,1)}
+.ring .fgc{stroke:var(--green);fill:none;stroke-width:6;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:52.3;transition:stroke-dashoffset 1.5s cubic-bezier(.3,.7,.3,1)}
 .slide.is-active .ring .fgc{stroke-dashoffset:9.8}
 .ring-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--ink);font-variant-numeric:tabular-nums}
-.req{display:flex;align-items:center;gap:9px;border:1.5px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:7px;font-size:12px;font-weight:600;color:var(--ink);transition:all .5s;background:#fff}
+.req{display:flex;align-items:center;gap:9px;border:1.5px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:7px;font-size:12px;font-weight:600;color:var(--ink);transition:all .8s;background:#fff}
 .req:last-child{margin-bottom:0}
-.req .st{width:19px;height:19px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:10px;font-weight:800;transition:all .5s}
+.req .st{width:19px;height:19px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:10px;font-weight:800;transition:all .8s}
 .req.ok{border-color:#C4EBDA}
 .req.ok .st{background:var(--green-soft);color:var(--green)}
-.req .fix{margin-left:auto;font-size:10px;font-weight:700;color:var(--amber);white-space:nowrap;transition:opacity .3s}
+.req .fix{margin-left:auto;font-size:10px;font-weight:700;color:var(--amber);white-space:nowrap;transition:opacity .5s}
 /* warn rows flip to ok while active */
 .req.flip{border-color:#F0D9B5;background:#FFFDF8}
 .req.flip .st{background:var(--amber-soft);color:var(--amber)}
 .slide.is-active .req.flip{animation:reqOk 0s forwards}
-.slide.is-active .req.f1{animation-delay:.6s}
-.slide.is-active .req.f2{animation-delay:1.15s}
+.slide.is-active .req.f1{animation-delay:1s}
+.slide.is-active .req.f2{animation-delay:1.85s}
 @keyframes reqOk{to{border-color:#C4EBDA;background:#fff}}
 .slide.is-active .req.flip .st{animation:stOk 0s forwards}
-.slide.is-active .req.f1 .st{animation-delay:.6s}
-.slide.is-active .req.f2 .st{animation-delay:1.15s}
+.slide.is-active .req.f1 .st{animation-delay:1s}
+.slide.is-active .req.f2 .st{animation-delay:1.85s}
 @keyframes stOk{to{background:var(--green-soft);color:var(--green)}}
 .slide.is-active .req.flip .fix{animation:fixHide 0s forwards}
-.slide.is-active .req.f1 .fix{animation-delay:.6s}
-.slide.is-active .req.f2 .fix{animation-delay:1.15s}
+.slide.is-active .req.f1 .fix{animation-delay:1s}
+.slide.is-active .req.f2 .fix{animation-delay:1.85s}
 @keyframes fixHide{to{opacity:0}}
 /* icon swap ! -> check when a gap is resolved */
 .req.flip .st{position:relative}
 .req.flip .st .g{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 .req.flip .st .g2{opacity:0}
-.slide.is-active .req.f1 .g1{animation:hideG 0s .6s forwards}
-.slide.is-active .req.f1 .g2{animation:showG 0s .6s forwards}
-.slide.is-active .req.f2 .g1{animation:hideG 0s 1.15s forwards}
-.slide.is-active .req.f2 .g2{animation:showG 0s 1.15s forwards}
+.slide.is-active .req.f1 .g1{animation:hideG 0s 1s forwards}
+.slide.is-active .req.f1 .g2{animation:showG 0s 1s forwards}
+.slide.is-active .req.f2 .g1{animation:hideG 0s 1.85s forwards}
+.slide.is-active .req.f2 .g2{animation:showG 0s 1.85s forwards}
 @keyframes hideG{to{opacity:0}}
 @keyframes showG{to{opacity:1}}
 
@@ -555,7 +555,7 @@ html,body{margin:0;padding:0;background:#fff}
           </div>
         </div>
         <div class="copy">
-          <span class="eyebrow reveal" style="--d:.05s"><span class="step">Step 3</span>Guided detail</span>
+          <span class="eyebrow reveal" style="--d:.05s"><span class="step">Step 3</span>Expand experience</span>
           <h2 class="reveal" style="--d:.12s">Fill in the wins you left out.</h2>
           <p class="reveal" style="--d:.2s">Walk your timeline and we surface the wins, skills, and people you forgot to write down.</p>
         </div>
@@ -700,7 +700,7 @@ html,body{margin:0;padding:0;background:#fff}
   function countRing(){
     if(!ringNum) return;
     if(reduce){ ringNum.textContent = '94%'; return; }
-    var start = 68, end = 94, t0 = null, dur = 950;
+    var start = 68, end = 94, t0 = null, dur = 1500;
     function frame(ts){
       if(t0===null) t0 = ts;
       var p = Math.min((ts - t0)/dur, 1);
@@ -732,7 +732,7 @@ html,body{margin:0;padding:0;background:#fff}
 
   function onEnter(idx){
     var s = slides[idx];
-    if(s.classList.contains('s-gaps')) timers.push(setTimeout(countRing, reduce?0:850));
+    if(s.classList.contains('s-gaps')) timers.push(setTimeout(countRing, reduce?0:1350));
     if(s.classList.contains('s-import')){
       resetConflict();
       // auto-resolve the conflict if the user doesn't tap it
