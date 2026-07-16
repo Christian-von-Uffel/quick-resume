@@ -16,6 +16,7 @@ import {
   MONTH_SELECT_OPTIONS,
   EMPTY_POSITION_DRAFT,
   DELETE_ACCOUNT_CONFIRM_PHRASE,
+  DELETE_POSITION_CONFIRM_PHRASE,
 } from "./lib/constants";
 import { readFileAsText, readFileAsBase64, downloadJsonFile } from "./lib/fileUtils";
 import {
@@ -150,6 +151,9 @@ export default function App({ initialData = null, userId = null }) {
   const [enrichingWorkId, setEnrichingWorkId] = useState(null);
   // Which position is pending a delete confirmation (null = no modal open).
   const [deleteConfirmWorkId, setDeleteConfirmWorkId] = useState(null);
+  // Typed confirmation phrase that has to match DELETE_POSITION_CONFIRM_PHRASE
+  // before the position delete button arms.
+  const [deletePositionConfirmText, setDeletePositionConfirmText] = useState("");
   // Whether the opt-in duplicate/overlap review dialog is open.
   const [isPositionReviewOpen, setIsPositionReviewOpen] = useState(false);
   // Delete-account dialog: open state plus the typed confirmation phrase that
@@ -880,9 +884,16 @@ export default function App({ initialData = null, userId = null }) {
     setDeleteConfirmWorkId((current) => (current === workId ? null : current));
   };
 
+  const handleCancelDeleteWorkHistory = () => {
+    setDeleteConfirmWorkId(null);
+    setDeletePositionConfirmText("");
+  };
+
   const handleConfirmDeleteWorkHistory = () => {
+    if (deletePositionConfirmText.trim() !== DELETE_POSITION_CONFIRM_PHRASE) return;
     if (deleteConfirmWorkId) handleDeleteWorkHistory(deleteConfirmWorkId);
     setDeleteConfirmWorkId(null);
+    setDeletePositionConfirmText("");
   };
 
   const showPositionReviewToast = useCallback((message) => {
@@ -1887,7 +1898,10 @@ export default function App({ initialData = null, userId = null }) {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setDeleteConfirmWorkId(item.id)}
+                      onClick={() => {
+                        setDeletePositionConfirmText("");
+                        setDeleteConfirmWorkId(item.id);
+                      }}
                       className="rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-red-300"
                     >
                       Delete
@@ -3095,12 +3109,16 @@ export default function App({ initialData = null, userId = null }) {
         return (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-            onClick={() => setDeleteConfirmWorkId(null)}
+            onClick={handleCancelDeleteWorkHistory}
           >
-            <div
+            <form
               role="dialog"
               aria-modal="true"
               onClick={(e) => e.stopPropagation()}
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleConfirmDeleteWorkHistory();
+              }}
               className="w-full max-w-sm rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl shadow-black/50"
             >
               <h2 className="text-lg font-semibold text-neutral-50">
@@ -3111,24 +3129,39 @@ export default function App({ initialData = null, userId = null }) {
                   ? `“${roleLabel}” will be removed from your work history. This can’t be undone.`
                   : "This position will be removed from your work history. This can’t be undone."}
               </p>
+
+              <label htmlFor="delete-position-confirm" className="mt-4 block text-xs text-neutral-500">
+                Type <span className="font-semibold text-neutral-200">{DELETE_POSITION_CONFIRM_PHRASE}</span> to confirm
+              </label>
+              <input
+                id="delete-position-confirm"
+                type="text"
+                value={deletePositionConfirmText}
+                onChange={(e) => setDeletePositionConfirmText(e.target.value)}
+                placeholder={DELETE_POSITION_CONFIRM_PHRASE}
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                className="mt-2 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-red-500/60"
+              />
+
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   type="button"
-                  autoFocus
-                  onClick={() => setDeleteConfirmWorkId(null)}
+                  onClick={handleCancelDeleteWorkHistory}
                   className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                 >
                   No, keep it
                 </button>
                 <button
-                  type="button"
-                  onClick={handleConfirmDeleteWorkHistory}
-                  className="rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/25 dark:text-red-300"
+                  type="submit"
+                  disabled={deletePositionConfirmText.trim() !== DELETE_POSITION_CONFIRM_PHRASE}
+                  className="rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-300"
                 >
                   Yes, delete
                 </button>
               </div>
-            </div>
+            </form>
           </div>
         );
       })()}

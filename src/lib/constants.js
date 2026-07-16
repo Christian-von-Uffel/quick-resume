@@ -92,6 +92,9 @@ export const DEFAULT_LLM_SETTINGS = {
 // Exact phrase the delete-account dialog requires before it will act.
 export const DELETE_ACCOUNT_CONFIRM_PHRASE = "DELETE";
 
+// Exact phrase the delete-position dialog requires before it will act.
+export const DELETE_POSITION_CONFIRM_PHRASE = "DELETE";
+
 export const MONTH_OPTIONS = [
   "January",
   "February",
