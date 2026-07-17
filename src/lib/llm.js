@@ -120,12 +120,19 @@ export async function fetchPreferredLlmProvider() {
 }
 
 /* ── Generation ────────────────────────────────────────────── */
-export async function callLlm(settings, prompt, file) {
+// `meta` is metrics context — { promptKey, runId, purpose } — that the server
+// stamps onto llm_calls. It's advisory: the route validates the prompt key
+// against the catalog and resolves the foreign key itself, so a wrong or
+// missing meta costs attribution, never the generation.
+export async function callLlm(settings, prompt, file, meta = {}) {
   const data = await postApiJson("/api/llm", {
     provider: settings.provider,
     model: settings.model.trim() || getDefaultModelForProvider(settings.provider),
     prompt,
     file: file ?? null,
+    promptKey: meta.promptKey ?? "",
+    runId: meta.runId ?? null,
+    purpose: meta.purpose ?? "",
   });
   return data.text ?? "";
 }
@@ -134,14 +141,14 @@ export async function callLlm(settings, prompt, file) {
 // Converts formats the chat providers can't ingest natively (Word, PowerPoint,
 // OpenDocument) into markdown text. The selected chat model still does the
 // JSON extraction; OCR only supplies it readable text.
-export async function callMistralOcr(file) {
-  const data = await postApiJson("/api/ocr", { file });
+export async function callMistralOcr(file, meta = {}) {
+  const data = await postApiJson("/api/ocr", { file, runId: meta.runId ?? null });
   return data.text ?? "";
 }
 
 /* ── Firecrawl (job page → markdown) ───────────────────────── */
-export async function scrapeJobPage(url) {
-  return postApiJson("/api/scrape", { url });
+export async function scrapeJobPage(url, meta = {}) {
+  return postApiJson("/api/scrape", { url, runId: meta.runId ?? null });
 }
 
 /* ── Response parsing ──────────────────────────────────────── */
@@ -162,8 +169,8 @@ function extractJson(text) {
 // object in prose or emit a stray token that breaks a strict parse; when that
 // happens, hand the model its own output back once and ask for clean JSON before
 // giving up. The file (if any) isn't resent on retry — only the text needs fixing.
-export async function callLlmForJson(settings, prompt, file) {
-  const text = await callLlm(settings, prompt, file);
+export async function callLlmForJson(settings, prompt, file, meta = {}) {
+  const text = await callLlm(settings, prompt, file, meta);
   try {
     return extractJson(text);
   } catch {
@@ -172,7 +179,10 @@ export async function callLlmForJson(settings, prompt, file) {
 <invalid_response>
 ${text}
 </invalid_response>`;
-    const repaired = await callLlm(settings, repairPrompt, null);
+    // The repair call is logged against the ORIGINAL prompt with purpose
+    // 'repair', not against the repair template: what we want to learn is which
+    // prompt keeps producing unparseable JSON, and that's the caller's.
+    const repaired = await callLlm(settings, repairPrompt, null, { ...meta, purpose: "repair" });
     return extractJson(repaired);
   }
 }

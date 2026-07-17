@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { MAX_QA_ROUNDS } from "../lib/enrichExperience";
+import { PROMPTS } from "../lib/prompts";
+import {
+  newMetricId,
+  startExperienceExpansion,
+  recordExpansionRounds,
+  recordQuestionsPresented,
+  recordQuestionAnswered,
+  recordQuestionSkipped,
+  recordSuggestionPresented,
+  recordSuggestionAccepted,
+  recordSuggestionRejected,
+} from "../lib/metrics";
 
 const chipClass = (active) =>
   `rounded-lg border px-3 py-1.5 text-sm transition-colors ${
@@ -71,6 +83,10 @@ export function EnrichExperience({
   // Holds a thunk that re-runs the last async step with its exact arguments, so
   // "Try again" always retries what actually failed (right transcript and round).
   const retryRef = useRef(null);
+  // The experience_expansions row this interview's questions and bullets hang
+  // off, and the questions.id for each question on screen this round.
+  const expansionIdRef = useRef(null);
+  const questionIdsRef = useRef({});
 
   // The trigger button lives at the top of a tall position card, so this panel
   // opens below the fold. Pull it into view on open ("nearest" no-ops when it's
@@ -84,6 +100,9 @@ export function EnrichExperience({
   // description at open time.
   useEffect(() => {
     cancelledRef.current = false;
+    // Minted before the first call so every round's cost records against this
+    // interview; the row itself waits until there are questions to show.
+    expansionIdRef.current = newMetricId();
     runOpening();
     return () => {
       cancelledRef.current = true;
@@ -91,19 +110,44 @@ export function EnrichExperience({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // One row per question on screen, keyed by question id so answering or
+  // skipping can find it later.
+  const rememberQuestions = (found, roundNumber, promptKey) => {
+    const ids = recordQuestionsPresented(
+      { experienceExpansionId: expansionIdRef.current },
+      found.map((question) => ({
+        promptKey,
+        question: question.question,
+        options: question.options ?? [],
+        round: roundNumber,
+      }))
+    );
+    questionIdsRef.current = Object.fromEntries(
+      found.map((question, index) => [question.id, ids[index]])
+    );
+  };
+
   const runOpening = async () => {
     retryRef.current = runOpening;
     setStatus("loading");
     setLoadingKind("opening");
     setError("");
     try {
-      const found = await loadOpening({ position, company, description, tenureLabel });
+      const found = await loadOpening({
+        position,
+        company,
+        description,
+        tenureLabel,
+        runId: expansionIdRef.current,
+      });
       if (cancelledRef.current) return;
       if (!found.length) {
         setError("Couldn't come up with questions for this role. Try again.");
         setStatus("error");
         return;
       }
+      startExperienceExpansion({ id: expansionIdRef.current, position, company });
+      rememberQuestions(found, 1, PROMPTS.EXPANSION_OPENING);
       setQuestions(withRuntimeState(found));
       setRound(1);
       setStatus("answering");
@@ -127,6 +171,7 @@ export function EnrichExperience({
         tenureLabel,
         transcript: currentTranscript,
         round: nextRound,
+        runId: expansionIdRef.current,
       });
       if (cancelledRef.current) return;
       // Model says it knows enough, or the batch came back empty — write it up.
@@ -134,6 +179,7 @@ export function EnrichExperience({
         runCompose(currentTranscript);
         return;
       }
+      rememberQuestions(result.questions, nextRound, PROMPTS.EXPANSION_FOLLOWUP);
       setQuestions(withRuntimeState(result.questions));
       setRound(nextRound);
       setStatus("answering");
@@ -156,6 +202,7 @@ export function EnrichExperience({
         description,
         tenureLabel,
         transcript: finalTranscript,
+        runId: expansionIdRef.current,
       });
       if (cancelledRef.current) return;
       if (!composed.length) {
@@ -163,7 +210,19 @@ export function EnrichExperience({
         setStatus("error");
         return;
       }
-      setBullets(composed.map((text) => ({ text, resolution: null })));
+      // Reaching the write-up is where the interview ends, so this is where the
+      // round count is final.
+      recordExpansionRounds(expansionIdRef.current, round);
+      setBullets(
+        composed.map((text) => ({
+          text,
+          resolution: null,
+          suggestionId: recordSuggestionPresented(
+            { experienceExpansionId: expansionIdRef.current },
+            { suggestion: text, promptKey: PROMPTS.EXPANSION_COMPOSE }
+          ),
+        }))
+      );
       setStatus("review");
     } catch (err) {
       if (cancelledRef.current) return;
@@ -200,8 +259,28 @@ export function EnrichExperience({
   const answeredThisRound = collectAnswers(questions);
   const sessionHasAnswer = transcript.length > 0 || answeredThisRound.length > 0;
 
+  // Settle this round's questions before they leave the screen. Mirrors
+  // collectAnswers: a question left untouched gets no timestamp at all, which
+  // is what distinguishes "ignored" from "explicitly skipped".
+  const recordRoundOutcomes = () => {
+    for (const question of questions) {
+      const id = questionIdsRef.current[question.id];
+      if (!id) continue;
+      if (question.skipped) {
+        recordQuestionSkipped(id);
+      } else if (question.usingCustom && question.customAnswer.trim()) {
+        recordQuestionAnswered(id, { answerText: question.customAnswer.trim() });
+      } else if (question.multiSelect && question.choices.length) {
+        recordQuestionAnswered(id, { selectedOptions: question.choices });
+      } else if (!question.multiSelect && question.choice) {
+        recordQuestionAnswered(id, { selectedOptions: [question.choice] });
+      }
+    }
+  };
+
   const handleContinue = () => {
     if (!answeredThisRound.length) return;
+    recordRoundOutcomes();
     const nextTranscript = [...transcript, ...answeredThisRound];
     setTranscript(nextTranscript);
     if (round >= MAX_QA_ROUNDS) {
@@ -212,6 +291,7 @@ export function EnrichExperience({
   };
 
   const handleWriteUpNow = () => {
+    recordRoundOutcomes();
     const nextTranscript = answeredThisRound.length
       ? [...transcript, ...answeredThisRound]
       : transcript;
@@ -225,12 +305,14 @@ export function EnrichExperience({
 
   const handleAcceptBullet = (index) => {
     onAcceptBullet(bullets[index].text);
+    recordSuggestionAccepted(bullets[index].suggestionId);
     setBullets((current) =>
       current.map((bullet, i) => (i === index ? { ...bullet, resolution: "accepted" } : bullet))
     );
   };
 
   const handleRejectBullet = (index) => {
+    recordSuggestionRejected(bullets[index].suggestionId);
     setBullets((current) =>
       current.map((bullet, i) => (i === index ? { ...bullet, resolution: "rejected" } : bullet))
     );

@@ -5,6 +5,7 @@ import {
   hasActiveAccess,
   subscriptionRequiredResponse,
 } from "../../../src/lib/server/subscription";
+import { recordLlmCall } from "../../../src/lib/server/llmCalls";
 
 // Firecrawl renders the page before returning markdown, which can take a while
 // on heavy job boards.
@@ -35,10 +36,35 @@ export async function POST(request) {
     return Response.json({ error: "Only http(s) URLs can be scraped." }, { status: 400 });
   }
 
+  // Firecrawl bills per page fetched, not by token; the LLM cleanup that
+  // follows is a separate /api/llm call under the same run id.
+  const runId = body?.runId ?? null;
+  const startedAt = Date.now();
+
   try {
     const result = await scrapePageMarkdown(url);
+
+    recordLlmCall({
+      userId: user.id,
+      runId,
+      provider: "firecrawl",
+      model: "scrape",
+      pages: 1,
+      durationMs: Date.now() - startedAt,
+      succeeded: true,
+    });
+
     return Response.json(result);
   } catch (error) {
+    recordLlmCall({
+      userId: user.id,
+      runId,
+      provider: "firecrawl",
+      model: "scrape",
+      durationMs: Date.now() - startedAt,
+      succeeded: false,
+    });
+
     return Response.json(
       { error: error instanceof Error ? error.message : "Scraping the page failed." },
       { status: error instanceof LlmHttpError ? error.status : 502 }

@@ -5,6 +5,16 @@ import {
   CLARITY_REWRITE_STEPS,
   validateClarityReview,
 } from "../lib/clarifyExperience";
+import { PROMPTS } from "../lib/prompts";
+import {
+  newMetricId,
+  startClarityReview,
+  recordQuestionsPresented,
+  recordQuestionAnswered,
+  recordSuggestionPresented,
+  recordSuggestionAccepted,
+  recordSuggestionRejected,
+} from "../lib/metrics";
 import { PipelineSteps } from "./PipelineSteps";
 
 // How long the prepare step stays visibly active before results land. The
@@ -19,6 +29,7 @@ const PREPARE_STEP_VISIBLE_MS = 450;
 // the rewrite is fetched. Accepting replaces the sentence in the description.
 export function ExperienceReview({
   position,
+  company,
   description,
   reviewSentences,
   proposeRewrite,
@@ -37,6 +48,8 @@ export function ExperienceReview({
   const [failed, setFailed] = useState(false);
   const cancelledRef = useRef(false);
   const panelRef = useRef(null);
+  // The clarity_reviews row these questions and suggestions hang off.
+  const reviewIdRef = useRef(null);
 
   // The trigger button lives at the top of a tall position card, so this panel
   // opens below the fold and the review looks like it did nothing. Pull it into
@@ -50,11 +63,15 @@ export function ExperienceReview({
     cancelledRef.current = false;
     setStepIndex(0);
     setFailed(false);
+    // Minted before the call so its cost records against this review, even
+    // though the clarity_reviews row itself isn't written until the questions
+    // survive validation.
+    reviewIdRef.current = newMetricId();
 
     (async () => {
       try {
         // Step 1: one LLM call flags the hardest-to-read sentences.
-        const parsed = await reviewSentences({ position, description });
+        const parsed = await reviewSentences({ position, description, runId: reviewIdRef.current });
         if (cancelledRef.current) return;
 
         // Step 2: paint the prepare stage before validating. Without flushSync,
@@ -71,9 +88,23 @@ export function ExperienceReview({
         // Leave the checklist mounted with every step checked — hiding it here
         // would collapse the panel the moment results appear.
         setStepIndex(CLARITY_REVIEW_STEPS.length);
-        setItems(
+
+        // Recorded after validation and after the no-options drop, so
+        // "presented" counts the questions the person could actually answer.
+        startClarityReview({ id: reviewIdRef.current, position, company });
+        const questionIds = recordQuestionsPresented(
+          { clarityReviewId: reviewIdRef.current },
           found.map((item) => ({
+            promptKey: PROMPTS.CLARITY_REVIEW,
+            question: item.question,
+            options: item.options,
+          }))
+        );
+
+        setItems(
+          found.map((item, index) => ({
             ...item,
+            questionId: questionIds[index],
             // per-item runtime state
             choice: null, // selected option text or the custom answer
             usingCustom: false,
@@ -135,12 +166,21 @@ export function ExperienceReview({
       resolution: null,
     });
 
+    // Asking for a rewrite IS the answer to the question: the person either
+    // picked one of the offered interpretations or typed their own.
+    const pickedOption = item.options.includes(trimmed);
+    recordQuestionAnswered(item.questionId, {
+      selectedOptions: pickedOption ? [trimmed] : [],
+      answerText: pickedOption ? "" : trimmed,
+    });
+
     try {
       const proposal = await proposeRewrite({
         position,
         sentence: item.sentence,
         clarification: trimmed,
         skills: item.skillsNone ? [] : item.selectedSkills,
+        runId: reviewIdRef.current,
       });
       if (cancelledRef.current) return;
       if (!proposal) {
@@ -150,7 +190,13 @@ export function ExperienceReview({
         });
         return;
       }
-      updateItem(item.id, { proposal, proposalStatus: "ready" });
+      // Re-answering yields a fresh suggestion row: the earlier one really was
+      // shown and really wasn't accepted.
+      const suggestionId = recordSuggestionPresented(
+        { clarityReviewId: reviewIdRef.current },
+        { suggestion: proposal, promptKey: PROMPTS.CLARITY_REWRITE, questionId: item.questionId }
+      );
+      updateItem(item.id, { proposal, proposalStatus: "ready", suggestionId });
     } catch (err) {
       if (cancelledRef.current) return;
       updateItem(item.id, {
@@ -163,10 +209,12 @@ export function ExperienceReview({
   const handleAccept = (item) => {
     onAcceptSentence(item.sentence, item.proposal);
     updateItem(item.id, { resolution: "accepted" });
+    recordSuggestionAccepted(item.suggestionId);
   };
 
   const handleReject = (item) => {
     updateItem(item.id, { resolution: "rejected" });
+    recordSuggestionRejected(item.suggestionId);
   };
 
   return (

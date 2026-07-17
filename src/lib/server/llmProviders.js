@@ -406,6 +406,22 @@ export async function getModelOptionsForProvider(provider) {
 }
 
 /* ── Generation ────────────────────────────────────────────── */
+// Token counts, normalized across the three response shapes the providers use.
+// Every field is optional upstream, so anything missing reads as 0 rather than
+// failing the call — usage metering must never cost a user their generation.
+function readUsage(data) {
+  const usage = data?.usage ?? {};
+  const gemini = data?.usageMetadata ?? {};
+  return {
+    inputTokens: toCount(usage.input_tokens ?? usage.prompt_tokens ?? gemini.promptTokenCount),
+    outputTokens: toCount(usage.output_tokens ?? usage.completion_tokens ?? gemini.candidatesTokenCount),
+  };
+}
+
+function toCount(value) {
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+}
+
 async function callGemini({ apiKey, model, prompt, file }) {
   const parts = [{ text: prompt }];
   if (file) {
@@ -428,7 +444,10 @@ async function callGemini({ apiKey, model, prompt, file }) {
     `gemini:${model}`
   );
 
-  return data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n").trim() ?? "";
+  return {
+    text: data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n").trim() ?? "",
+    usage: readUsage(data),
+  };
 }
 
 // OpenAI and xAI both speak the Responses API. Same request/response shape;
@@ -459,13 +478,17 @@ async function callResponsesApi({ apiKey, model, prompt, file, baseUrl, provider
     memoKey
   );
 
-  if (data.output_text) return data.output_text.trim();
+  // An empty output_text still means "fall back to the output blocks", so this
+  // stays a truthiness check rather than a nullish one.
+  const text = data.output_text
+    ? data.output_text.trim()
+    : data.output
+        ?.flatMap((item) => item.content ?? [])
+        ?.map((item) => item.text ?? "")
+        ?.join("\n")
+        ?.trim() ?? "";
 
-  return data.output
-    ?.flatMap((item) => item.content ?? [])
-    ?.map((item) => item.text ?? "")
-    ?.join("\n")
-    ?.trim() ?? "";
+  return { text, usage: readUsage(data) };
 }
 
 async function callOpenAI({ apiKey, model, prompt, file }) {
@@ -528,9 +551,14 @@ async function callAnthropic({ apiKey, model, prompt, file }) {
     `anthropic:${model}`
   );
 
-  return data.content?.map((block) => block.text ?? "").join("\n").trim() ?? "";
+  return {
+    text: data.content?.map((block) => block.text ?? "").join("\n").trim() ?? "",
+    usage: readUsage(data),
+  };
 }
 
+// Returns { text, usage: { inputTokens, outputTokens } }. The usage half feeds
+// llm_calls; callers that only want the answer can destructure text.
 export async function callProvider({ provider, model, prompt, file }) {
   if (provider === "openai") {
     return callOpenAI({ apiKey: requireServerApiKey("OpenAI"), model, prompt, file });
@@ -566,7 +594,8 @@ export async function runMistralOcr(file) {
     null
   );
 
-  const text = (data.pages ?? [])
+  const pages = data.pages ?? [];
+  const text = pages
     .map((page) => page.markdown ?? "")
     .join("\n\n")
     .trim();
@@ -575,7 +604,9 @@ export async function runMistralOcr(file) {
     throw new LlmHttpError(`Mistral OCR found no text in ${file.name}. Check the file and try again.`, 422);
   }
 
-  return text;
+  // Mistral bills OCR by page, not by token — hence pagesProcessed rather than
+  // the { inputTokens, outputTokens } the chat providers return.
+  return { text, pagesProcessed: toCount(data.usage_info?.pages_processed) || pages.length };
 }
 
 /* ── Firecrawl (job page → markdown) ───────────────────────── */

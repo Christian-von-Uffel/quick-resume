@@ -5,6 +5,7 @@ import {
   hasActiveAccess,
   subscriptionRequiredResponse,
 } from "../../../src/lib/server/subscription";
+import { recordLlmCall, normalizePromptKey } from "../../../src/lib/server/llmCalls";
 
 // Non-streaming generations on large models can legitimately run past a
 // minute; without this, hosted deploys kill the function mid-generation.
@@ -46,10 +47,52 @@ export async function POST(request) {
     );
   }
 
+  // Metrics context, all advisory: the browser says which prompt it rendered
+  // and which run the call belongs to. Only the shape is trusted — the key is
+  // matched against the catalog and the id resolved server-side.
+  const promptKey = normalizePromptKey(body?.promptKey);
+  const wasRepair = body?.purpose === "repair";
+  const runId = body?.runId ?? null;
+  const startedAt = Date.now();
+
   try {
-    const text = await callProvider({ provider, model, prompt, file: normalizeFile(body.file) });
+    const { text, usage } = await callProvider({
+      provider,
+      model,
+      prompt,
+      file: normalizeFile(body.file),
+    });
+
+    // Not awaited: metering must not add latency to a call the user is waiting
+    // on, and recordLlmCall swallows its own failures.
+    recordLlmCall({
+      userId: user.id,
+      promptKey,
+      runId,
+      wasRepair,
+      provider,
+      model,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      durationMs: Date.now() - startedAt,
+      succeeded: true,
+    });
+
     return Response.json({ text });
   } catch (error) {
+    // Failed calls are recorded too — a prompt that reliably makes a model fall
+    // over is exactly what a per-prompt failure rate is meant to surface.
+    recordLlmCall({
+      userId: user.id,
+      promptKey,
+      runId,
+      wasRepair,
+      provider,
+      model,
+      durationMs: Date.now() - startedAt,
+      succeeded: false,
+    });
+
     return Response.json(
       { error: error instanceof Error ? error.message : "The model call failed." },
       { status: error instanceof LlmHttpError ? error.status : 502 }

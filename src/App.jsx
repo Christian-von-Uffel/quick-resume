@@ -45,6 +45,25 @@ import {
 } from "./lib/resumeModel";
 import { createClient } from "./lib/supabase/client";
 import { syncAppStateToDb, deleteUserData } from "./lib/syncProfile";
+import { PROMPTS } from "./lib/prompts";
+import {
+  configureMetrics,
+  newMetricId,
+  recordResumeImport,
+  startClarityReview,
+  startExperienceExpansion,
+  recordExpansionRounds,
+  startJobGapAnalysis,
+  recordGapDetailsSaved,
+  recordResumeGeneration,
+  recordResumeDownload,
+  recordQuestionsPresented,
+  recordQuestionAnswered,
+  recordQuestionSkipped,
+  recordSuggestionPresented,
+  recordSuggestionAccepted,
+  recordSuggestionRejected,
+} from "./lib/metrics";
 import {
   getDefaultModelForProvider,
   fetchProviderModelOptions,
@@ -223,6 +242,12 @@ export default function App({ initialData = null, userId = null }) {
   const workHistorySaveToastDebounceRef = useRef(null);
   const profileDataToastTimeoutRef = useRef(null);
   const missingExperienceSaveToastTimeoutRef = useRef(null);
+  // The job_gap_analyses row the questions on screen belong to, and the
+  // questions.id for each surfaced skill (details are keyed by skill, not id).
+  const gapAnalysisIdRef = useRef(null);
+  const gapQuestionIdsRef = useRef({});
+  // Details can be saved in batches, so the running total is kept here.
+  const gapDetailsSavedRef = useRef(0);
   // Cloud-sync bookkeeping: the Supabase client, the last snapshot written, and
   // guards so saves never overlap or fire during account deletion.
   const supabaseClientRef = useRef(null);
@@ -238,6 +263,12 @@ export default function App({ initialData = null, userId = null }) {
     }
     return supabaseClientRef.current;
   };
+
+  // Point the metrics writer at this session. Row-level security scopes every
+  // write to the signed-in user; until this runs, the writes are no-ops.
+  useEffect(() => {
+    configureMetrics({ supabase: userId ? getSupabaseClient() : null, user: userId });
+  }, [userId]);
 
   // ── First-run onboarding ─────────────────────────────────────────────────
   // Show the welcome flow to brand-new users the first time they reach the
@@ -958,11 +989,12 @@ export default function App({ initialData = null, userId = null }) {
   // Validation (and the step indicator for it) lives in ExperienceReview so the
   // prepare stage can advance after this call returns.
   const handleReviewSentences = useCallback(
-    async ({ position, description }) => {
+    async ({ position, description, runId }) => {
       return callLlmForJson(
         llmSettings,
         buildClarityReviewPrompt({ position, description }),
-        null
+        null,
+        { promptKey: PROMPTS.CLARITY_REVIEW, runId }
       );
     },
     [llmSettings]
@@ -971,11 +1003,12 @@ export default function App({ initialData = null, userId = null }) {
   // Turn a flagged sentence plus the person's clarification (and any confirmed
   // skills, tools, or collaborators) into a clearer rewrite.
   const handleProposeSentenceRewrite = useCallback(
-    async ({ position, sentence, clarification, skills }) => {
+    async ({ position, sentence, clarification, skills, runId }) => {
       const text = await callLlm(
         llmSettings,
         buildClaritySuggestionPrompt({ position, sentence, clarification, skills }),
-        null
+        null,
+        { promptKey: PROMPTS.CLARITY_REWRITE, runId }
       );
       return cleanSuggestedSentence(text);
     },
@@ -1010,11 +1043,12 @@ export default function App({ initialData = null, userId = null }) {
   // Ask the model for the first few dead-simple questions about what this person
   // actually does day to day. Grounded in the role, not job-posting boilerplate.
   const handleLoadOpeningQuestions = useCallback(
-    async ({ position, company, description, tenureLabel }) => {
+    async ({ position, company, description, tenureLabel, runId }) => {
       const parsed = await callLlmForJson(
         llmSettings,
         buildOpeningQuestionsPrompt({ position, company, description, tenure: tenureLabel }),
-        null
+        null,
+        { promptKey: PROMPTS.EXPANSION_OPENING, runId }
       );
       return validateOpeningQuestions(parsed);
     },
@@ -1024,7 +1058,7 @@ export default function App({ initialData = null, userId = null }) {
   // Ask the next questions that branch off what the person has answered so far,
   // or get back an "enough" signal that we know enough to write it up.
   const handleLoadFollowupQuestions = useCallback(
-    async ({ position, company, description, tenureLabel, transcript, round }) => {
+    async ({ position, company, description, tenureLabel, transcript, round, runId }) => {
       const parsed = await callLlmForJson(
         llmSettings,
         buildFollowupQuestionsPrompt({
@@ -1036,7 +1070,8 @@ export default function App({ initialData = null, userId = null }) {
           round,
           maxRounds: MAX_QA_ROUNDS,
         }),
-        null
+        null,
+        { promptKey: PROMPTS.EXPANSION_FOLLOWUP, runId }
       );
       return validateFollowupQuestions(parsed, { round });
     },
@@ -1045,11 +1080,12 @@ export default function App({ initialData = null, userId = null }) {
 
   // Turn the whole Q&A transcript into 1-3 plainspoken resume bullets.
   const handleComposeEnrichedBullets = useCallback(
-    async ({ position, company, description, tenureLabel, transcript }) => {
+    async ({ position, company, description, tenureLabel, transcript, runId }) => {
       const parsed = await callLlmForJson(
         llmSettings,
         buildComposePrompt({ position, company, description, tenure: tenureLabel, transcript }),
-        null
+        null,
+        { promptKey: PROMPTS.EXPANSION_COMPOSE, runId }
       );
       return validateComposedBullets(parsed);
     },
@@ -1115,9 +1151,14 @@ export default function App({ initialData = null, userId = null }) {
     setScrapeError("");
     setScrapeSuccess("");
 
+    // Scraping isn't one of the six metrics — it's a step on the way to a
+    // generation — but the Firecrawl fetch and the cleanup call both cost
+    // money, so they're tied together for cost reporting.
+    const scrapeRunId = newMetricId();
+
     try {
       // 1. Fetch raw markdown and metadata via the server's Firecrawl proxy
-      const scraped = await scrapeJobPage(scrapeUrl.trim());
+      const scraped = await scrapeJobPage(scrapeUrl.trim(), { runId: scrapeRunId });
 
       // 2. Select the cheapest model depending on the active provider
       const provider = llmSettings.provider;
@@ -1146,7 +1187,10 @@ export default function App({ initialData = null, userId = null }) {
         rawText: scraped.markdown,
       });
 
-      const cleanedLlmResponse = await callLlm(cleanLlmSettings, cleanPrompt, null);
+      const cleanedLlmResponse = await callLlm(cleanLlmSettings, cleanPrompt, null, {
+        promptKey: PROMPTS.JOB_DESCRIPTION_CLEAN,
+        runId: scrapeRunId,
+      });
       const cleanedText = extractCleanedJobDescription(cleanedLlmResponse);
 
       handleGenerationInstructionsChange(cleanedText);
@@ -1179,19 +1223,40 @@ export default function App({ initialData = null, userId = null }) {
     setMissingExperienceStatus("");
     setMissingExperienceStepIndex(0);
 
+    // Minted before the call so its cost records against this analysis; the
+    // job_gap_analyses row itself waits until the questions survive validation.
+    const gapAnalysisId = newMetricId();
+    gapAnalysisIdRef.current = gapAnalysisId;
+    gapDetailsSavedRef.current = 0;
+
     try {
       // Step 1: one LLM call reads the whole posting and compares it against
       // the stored work history, returning gap questions.
       const parsed = await callLlmForJson(
         llmSettings,
         buildMissingExperienceReviewPrompt({ workHistory, jobDescription }),
-        null
+        null,
+        { promptKey: PROMPTS.GAP_REVIEW, runId: gapAnalysisId }
       );
 
       // Step 2: validate the questions and connect each to the stored roles it names.
       setMissingExperienceStepIndex(1);
       const details = validateMissingExperienceReview(parsed, workHistory);
       setMissingExperienceDetails(details);
+
+      // Recorded post-validation: the count is the gaps actually put in front
+      // of the person. Each gap is a question they confirm or dismiss.
+      startJobGapAnalysis({ id: gapAnalysisId, gapsFound: details.length });
+      const questionIds = recordQuestionsPresented(
+        { jobGapAnalysisId: gapAnalysisId },
+        details.map((detail) => ({
+          promptKey: PROMPTS.GAP_REVIEW,
+          question: detail.question,
+        }))
+      );
+      gapQuestionIdsRef.current = Object.fromEntries(
+        details.map((detail, index) => [detail.skill, questionIds[index]])
+      );
       setConfirmedMissingExperienceSkills([]);
       setDismissedMissingExperienceSkills([]);
       setMissingExperiencePositionFilters({});
@@ -1227,12 +1292,16 @@ export default function App({ initialData = null, userId = null }) {
       const { [skill]: _removed, ...remaining } = current;
       return remaining;
     });
+    recordQuestionSkipped(gapQuestionIdsRef.current[skill]);
   };
 
   const handleConfirmMissingExperienceDetail = (skill) => {
     setConfirmedMissingExperienceSkills((current) =>
       current.includes(skill) ? current : [...current, skill]
     );
+    // Confirming is the answer. Anything the person types afterwards is
+    // recorded on Save, once it's final.
+    recordQuestionAnswered(gapQuestionIdsRef.current[skill]);
   };
 
   const handleMissingExperienceElaborationChange = (skill, workId, value) => {
@@ -1367,7 +1436,8 @@ export default function App({ initialData = null, userId = null }) {
           const text = await callLlm(
             llmSettings,
             formatExperienceElaboration({ question: task.detail.question, answer: task.answer }),
-            null
+            null,
+            { promptKey: PROMPTS.GAP_ELABORATION, runId: gapAnalysisIdRef.current }
           );
           return { workId: task.workId, line: cleanFormattedDetail(text) || fallback };
         })
@@ -1405,6 +1475,23 @@ export default function App({ initialData = null, userId = null }) {
       );
 
       setWorkHistory(nextWorkHistory);
+
+      // The person can save in batches, so this accumulates across saves rather
+      // than overwriting the count from the last one.
+      gapDetailsSavedRef.current += savedCount;
+      recordGapDetailsSaved(gapAnalysisIdRef.current, gapDetailsSavedRef.current);
+
+      // Whatever they typed is final now; record it against the question so we
+      // can see which gaps people bother to elaborate on.
+      for (const detail of confirmedDetails) {
+        const answers = Object.values(missingExperienceElaborations[detail.skill] ?? {})
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (answers.length === 0) continue;
+        recordQuestionAnswered(gapQuestionIdsRef.current[detail.skill], {
+          answerText: answers.join("\n"),
+        });
+      }
 
       // Drop the questions we just saved so they leave the list (and the whole
       // section disappears once every question has been handled).
@@ -1453,11 +1540,16 @@ export default function App({ initialData = null, userId = null }) {
     setIsImporting(true);
     setImportStatus("Reading resume file...");
 
+    // Minted up front so the OCR and extraction calls both record their cost
+    // against this one import.
+    const importId = newMetricId();
+    const fileType = resolveImportMimeType(file);
+
     try {
       const base64 = await readFileAsBase64(file);
       const importFile = {
         name: file.name,
-        mimeType: resolveImportMimeType(file),
+        mimeType: fileType,
         base64,
       };
 
@@ -1467,11 +1559,16 @@ export default function App({ initialData = null, userId = null }) {
       let ocrText = null;
       if (needsMistralOcr(file)) {
         setImportStatus("Converting the file to text with Mistral OCR...");
-        ocrText = await callMistralOcr(importFile);
+        ocrText = await callMistralOcr(importFile, { runId: importId });
       }
 
       setImportStatus("Asking the model to extract profile and work history...");
-      const imported = await callLlmForJson(llmSettings, importResume(ocrText), ocrText ? null : importFile);
+      const imported = await callLlmForJson(
+        llmSettings,
+        importResume(ocrText),
+        ocrText ? null : importFile,
+        { promptKey: PROMPTS.IMPORT_EXTRACT, runId: importId }
+      );
       const importedProfile = coerceImportedProfile(imported.profile);
       const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
 
@@ -1491,7 +1588,7 @@ export default function App({ initialData = null, userId = null }) {
       // Entries matching an existing position's title + company + dates (typo-
       // tolerant) fold in automatically instead of piling up as duplicates.
       setWorkHistory((current) => mergeImportedWorkHistory(current, importedHistory).merged);
-      const { mergedCount } = mergeImportedWorkHistory(workHistory, importedHistory);
+      const { merged, mergedCount } = mergeImportedWorkHistory(workHistory, importedHistory);
       const mergedNote =
         mergedCount > 0
           ? ` ${mergedCount} duplicate${mergedCount === 1 ? " was" : "s were"} merged automatically.`
@@ -1499,8 +1596,21 @@ export default function App({ initialData = null, userId = null }) {
       setImportStatus(
         `Imported ${importedHistory.length} role${importedHistory.length === 1 ? "" : "s"} from ${file.name}.${mergedNote}`
       );
+
+      // roles_found is what the model returned; roles_added is what actually
+      // landed. They differ — empty entries are dropped and duplicates fold
+      // into existing roles — and the gap is worth seeing.
+      recordResumeImport({
+        id: importId,
+        fileType,
+        usedOcr: ocrText !== null,
+        rolesFound: importedHistory.length,
+        rolesAdded: Math.max(0, merged.length - workHistory.length),
+        succeeded: true,
+      });
     } catch (error) {
       setImportStatus(error instanceof Error ? error.message : "Import failed.");
+      recordResumeImport({ id: importId, fileType, usedOcr: needsMistralOcr(file), succeeded: false });
     } finally {
       setIsImporting(false);
       event.target.value = "";
@@ -1513,12 +1623,19 @@ export default function App({ initialData = null, userId = null }) {
     setGenerateStatus("");
     setGenerateStepIndex(0);
 
+    // One generation is three model calls; they all record their cost against
+    // this id.
+    const generationId = newMetricId();
+
     try {
       // Step 1: read the job description once — the company/position for the
       // saved resume's title plus the key responsibilities and requirements
       // that the later steps rank bullets against and frame the summary with.
       const jobAnalysis = validateJobAnalysis(
-        await callLlmForJson(llmSettings, buildJobAnalysisPrompt(generationInstructions), null)
+        await callLlmForJson(llmSettings, buildJobAnalysisPrompt(generationInstructions), null, {
+          promptKey: PROMPTS.GENERATION_ANALYSIS,
+          runId: generationId,
+        })
       );
       const resumeTitle = titleGeneratedResume(jobAnalysis.company, jobAnalysis.position);
 
@@ -1532,7 +1649,8 @@ export default function App({ initialData = null, userId = null }) {
       const selectionJson = await callLlmForJson(
         llmSettings,
         selectRankedEvidence({ profile, workHistory, jobAnalysis, instructions: generationInstructions, coverage }),
-        null
+        null,
+        { promptKey: PROMPTS.GENERATION_EVIDENCE, runId: generationId }
       );
       const selectedEvidence = ensureRequiredRolesSelected(
         validateSelectedResumeEvidence(selectionJson, profile),
@@ -1551,7 +1669,8 @@ export default function App({ initialData = null, userId = null }) {
           instructions: generationInstructions,
           coverage,
         }),
-        null
+        null,
+        { promptKey: PROMPTS.GENERATION_COMPOSE, runId: generationId }
       );
       const nextMarkdown = text.replace(/^```(?:markdown)?\s*/i, "").replace(/```$/i, "").trim();
       // Save each generation as its own resume so existing resumes are never overwritten.
@@ -1571,11 +1690,22 @@ export default function App({ initialData = null, userId = null }) {
       setGenerateStatus("Generated a new resume.");
       setActiveMainTab("resume");
       setActiveResumeTab("editor");
+
+      // Title and company are copied, not looked up, so the row still says what
+      // this resume was aimed at after it's renamed or deleted.
+      recordResumeGeneration({
+        id: generationId,
+        resumeId: generatedResume.id,
+        jobTitle: jobAnalysis.position ?? "",
+        company: jobAnalysis.company ?? "",
+        succeeded: true,
+      });
     } catch (error) {
       // Leave generateStepIndex where it was so the step list shows which
       // stage of the pipeline failed.
       setGenerateFailed(true);
       setGenerateStatus(error instanceof Error ? error.message : "Generation failed.");
+      recordResumeGeneration({ id: generationId, succeeded: false });
     } finally {
       setIsGenerating(false);
     }
@@ -1592,6 +1722,10 @@ export default function App({ initialData = null, userId = null }) {
         updatedAt: selectedResume?.updatedAt,
       })
     );
+    // Printing happens entirely in the browser, so this is the only place a
+    // download can be observed at all. We can't know whether the user went
+    // through with the print dialog — this counts asking for the PDF.
+    recordResumeDownload({ resumeId: selectedResume?.id ?? null });
   }, [markdown, profile.name, selectedResume]);
 
   const fits = measuredHeight <= maxH;
@@ -2031,6 +2165,7 @@ export default function App({ initialData = null, userId = null }) {
                       <ExperienceReview
                         key={item.id}
                         position={item.position}
+                        company={item.company}
                         description={item.description}
                         reviewSentences={handleReviewSentences}
                         proposeRewrite={handleProposeSentenceRewrite}
