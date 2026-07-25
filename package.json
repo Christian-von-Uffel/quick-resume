@@ -24,7 +24,8 @@
     "build": "next build",
     "start": "next start",
     "preview": "next start",
-    "test": "vitest run"
+    "test": "vitest run",
+    "auth:configure": "node scripts/configure-supabase-auth.mjs"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.3",

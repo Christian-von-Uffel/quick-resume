@@ -1,0 +1,39 @@
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f5f5f4;padding:32px 12px;">
+  <tr>
+    <td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:480px;background:#ffffff;border:1px solid #e7e5e4;border-radius:12px;">
+        <tr>
+          <td style="padding:32px 32px 8px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+            <p style="margin:0 0 24px 0;font-size:13px;font-weight:600;letter-spacing:0.02em;color:#78716c;">1RESUME</p>
+            <h1 style="margin:0 0 12px 0;font-size:20px;line-height:28px;font-weight:600;color:#1c1917;">Confirm your email to get started</h1>
+            <p style="margin:0 0 24px 0;font-size:15px;line-height:23px;color:#57534e;">
+              One click creates your account and signs you in. There&rsquo;s no password to choose &mdash; this link is how you sign in from now on.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 32px 24px 32px;">
+            <a href="{{ .SiteURL }}/login?token_hash={{ .TokenHash }}&amp;type=signup"
+               style="display:inline-block;background:#1c1917;color:#fafaf9;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:500;padding:12px 24px;border-radius:8px;">
+              Create my account
+            </a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 32px 32px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+            <p style="margin:0 0 16px 0;font-size:13px;line-height:20px;color:#78716c;">
+              This link works once and expires in an hour. It signs in whichever device you open it on, and that device stays signed in.
+            </p>
+            <p style="margin:0 0 16px 0;font-size:13px;line-height:20px;color:#a8a29e;">
+              Button not working? Paste this into your browser:<br />
+              <span style="color:#78716c;word-break:break-all;">{{ .SiteURL }}/login?token_hash={{ .TokenHash }}&amp;type=signup</span>
+            </p>
+            <p style="margin:0;font-size:13px;line-height:20px;color:#a8a29e;">
+              If you didn&rsquo;t sign up for 1Resume, ignore this email and no account will be created.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
