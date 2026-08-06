@@ -76,6 +76,23 @@ describe("intentToUserMetadata", () => {
   it("sends nothing when there is nothing to carry", () => {
     expect(intentToUserMetadata({})).toBeUndefined();
     expect(intentToUserMetadata(undefined)).toBeUndefined();
+    expect(intentToUserMetadata({ next: "" }, { gclid: null })).toBeUndefined();
+  });
+
+  // The case paid acquisition depends on: someone arrives from an ad and signs
+  // up with no deep-link intent at all. The click id still has to reach the
+  // account, because the trial it pays for starts after the inbox hop.
+  it("carries the ad click id even with no intent present", () => {
+    expect(intentToUserMetadata(undefined, { gclid: "abc123" })).toEqual({
+      ad_attribution: { gclid: "abc123" },
+    });
+  });
+
+  it("carries both without either clobbering the other", () => {
+    expect(intentToUserMetadata({ next: "/app" }, { gclid: "abc123" })).toEqual({
+      pending_intent: { next: "/app" },
+      ad_attribution: { gclid: "abc123" },
+    });
   });
 });
 
