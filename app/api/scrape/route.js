@@ -5,7 +5,8 @@ import {
   hasActiveAccess,
   subscriptionRequiredResponse,
 } from "../../../src/lib/server/subscription";
-import { recordLlmCall } from "../../../src/lib/server/llmCalls";
+import { recordLlmCall, normalizeRunId } from "../../../src/lib/server/llmCalls";
+import { checkUsageAllowed, usageLimitResponse } from "../../../src/lib/server/quota";
 
 // Firecrawl renders the page before returning markdown, which can take a while
 // on heavy job boards.
@@ -14,7 +15,8 @@ export const maxDuration = 120;
 export async function POST(request) {
   const user = await getRequestUser();
   if (!user) return unauthorizedResponse();
-  if (!hasActiveAccess(await getSubscriptionForUser(user.id))) {
+  const subscription = await getSubscriptionForUser(user.id);
+  if (!hasActiveAccess(subscription)) {
     return subscriptionRequiredResponse();
   }
 
@@ -38,7 +40,18 @@ export async function POST(request) {
 
   // Firecrawl bills per page fetched, not by token; the LLM cleanup that
   // follows is a separate /api/llm call under the same run id.
-  const runId = body?.runId ?? null;
+  const runId = normalizeRunId(body?.runId);
+
+  // No run quota of its own — a scrape is cheap and per-page billed. It still
+  // passes through so the burst ceiling covers a script hammering the endpoint.
+  const decision = await checkUsageAllowed({
+    userId: user.id,
+    subscription,
+    feature: "job_scrape",
+    runId,
+  });
+  if (!decision.allowed) return usageLimitResponse(decision);
+
   const startedAt = Date.now();
 
   try {
@@ -47,6 +60,7 @@ export async function POST(request) {
     recordLlmCall({
       userId: user.id,
       runId,
+      feature: "job_scrape",
       provider: "firecrawl",
       model: "scrape",
       pages: 1,
@@ -59,6 +73,7 @@ export async function POST(request) {
     recordLlmCall({
       userId: user.id,
       runId,
+      feature: "job_scrape",
       provider: "firecrawl",
       model: "scrape",
       durationMs: Date.now() - startedAt,

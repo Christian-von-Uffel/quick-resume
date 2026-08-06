@@ -56,6 +56,21 @@ export function normalizeLlmSettings(value) {
 // stalls, and this guard only fires when our own server has gone quiet.
 const REQUEST_TIMEOUT_MS = 190_000;
 
+// A usage limit is the one API failure that is not a malfunction: it's the
+// paywall talking. Carrying the server's structured fields instead of only its
+// message lets the caller offer checkout at the moment someone wants more.
+export class UsageLimitError extends Error {
+  constructor(message, { limit = null, used = null, feature = null, reason = "quota", upgrade = false } = {}) {
+    super(message);
+    this.name = "UsageLimitError";
+    this.limit = limit;
+    this.used = used;
+    this.feature = feature;
+    this.reason = reason;
+    this.upgrade = upgrade;
+  }
+}
+
 async function fetchApiJson(path, init) {
   let response;
   try {
@@ -74,7 +89,9 @@ async function fetchApiJson(path, init) {
   // can answer with HTML), so parse defensively.
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(data?.error || `The server request failed (HTTP ${response.status}).`);
+    const message = data?.error || `The server request failed (HTTP ${response.status}).`;
+    if (response.status === 429) throw new UsageLimitError(message, data ?? {});
+    throw new Error(message);
   }
   if (data === null) {
     throw new Error("The server returned a response that couldn't be read. Try again.");
@@ -120,20 +137,30 @@ export async function fetchPreferredLlmProvider() {
 }
 
 /* ── Generation ────────────────────────────────────────────── */
-// `meta` is metrics context — { promptKey, runId, purpose } — that the server
-// stamps onto llm_calls. It's advisory: the route validates the prompt key
-// against the catalog and resolves the foreign key itself, so a wrong or
-// missing meta costs attribution, never the generation.
+// `meta` is metrics context — { runId, feature, purpose, onPromptId } — that the
+// server stamps onto llm_calls. The route find-or-inserts the prompt body into
+// public.prompts and returns promptId so product metrics can FK the same row.
+//
+// `feature` names the product action this call serves. The server validates it
+// against a fixed list, records it, and counts run quotas off it, so a call site
+// that forgets it is metered under the token ceiling only — pass it.
 export async function callLlm(settings, prompt, file, meta = {}) {
   const data = await postApiJson("/api/llm", {
     provider: settings.provider,
     model: settings.model.trim() || getDefaultModelForProvider(settings.provider),
     prompt,
+    // Repair calls send a wrapper prompt to the model but attribute cost to the
+    // original body so prompt_id stays on the prompt that needed fixing.
+    attributePrompt: meta.attributePrompt ?? prompt,
     file: file ?? null,
-    promptKey: meta.promptKey ?? "",
     runId: meta.runId ?? null,
+    feature: meta.feature ?? "",
     purpose: meta.purpose ?? "",
   });
+  const promptId = typeof data.promptId === "string" ? data.promptId : null;
+  if (promptId && typeof meta.onPromptId === "function") {
+    meta.onPromptId(promptId);
+  }
   return data.text ?? "";
 }
 
@@ -182,7 +209,12 @@ ${text}
     // The repair call is logged against the ORIGINAL prompt with purpose
     // 'repair', not against the repair template: what we want to learn is which
     // prompt keeps producing unparseable JSON, and that's the caller's.
-    const repaired = await callLlm(settings, repairPrompt, null, { ...meta, purpose: "repair" });
+    const repaired = await callLlm(settings, repairPrompt, null, {
+      ...meta,
+      purpose: "repair",
+      attributePrompt: prompt,
+      onPromptId: undefined,
+    });
     return extractJson(repaired);
   }
 }

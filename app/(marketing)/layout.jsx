@@ -1,4 +1,5 @@
 import Script from "next/script";
+import GoogleAdsTag from "../../src/components/GoogleAdsTag";
 import "./landing.css";
 
 export const metadata = {
@@ -41,6 +42,8 @@ export default function MarketingLayout({ children }) {
         {children}
         {/* Scroll reveal, nav shadow, FAQ accordion, and the two product demos. */}
         <Script src="/landing.js" strategy="afterInteractive" />
+        {/* Must stay in lockstep with app/(product)/layout.jsx — see the note there. */}
+        <GoogleAdsTag />
       </body>
     </html>
   );

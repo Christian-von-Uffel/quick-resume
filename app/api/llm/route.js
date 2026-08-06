@@ -5,7 +5,12 @@ import {
   hasActiveAccess,
   subscriptionRequiredResponse,
 } from "../../../src/lib/server/subscription";
-import { recordLlmCall, normalizePromptKey } from "../../../src/lib/server/llmCalls";
+import { recordLlmCall, normalizeRunId } from "../../../src/lib/server/llmCalls";
+import {
+  checkUsageAllowed,
+  normalizeFeature,
+  usageLimitResponse,
+} from "../../../src/lib/server/quota";
 
 // Non-streaming generations on large models can legitimately run past a
 // minute; without this, hosted deploys kill the function mid-generation.
@@ -13,8 +18,6 @@ export const maxDuration = 180;
 
 const PROVIDERS = new Set(["gemini", "openai", "anthropic", "xai"]);
 
-// A prompt attachment forwarded to the provider. Only shape is validated here;
-// the provider rejects unsupported media types itself.
 function normalizeFile(file) {
   if (!file || typeof file !== "object") return null;
   const { name, mimeType, base64 } = file;
@@ -25,7 +28,8 @@ function normalizeFile(file) {
 export async function POST(request) {
   const user = await getRequestUser();
   if (!user) return unauthorizedResponse();
-  if (!hasActiveAccess(await getSubscriptionForUser(user.id))) {
+  const subscription = await getSubscriptionForUser(user.id);
+  if (!hasActiveAccess(subscription)) {
     return subscriptionRequiredResponse();
   }
 
@@ -47,12 +51,25 @@ export async function POST(request) {
     );
   }
 
-  // Metrics context, all advisory: the browser says which prompt it rendered
-  // and which run the call belongs to. Only the shape is trusted — the key is
-  // matched against the catalog and the id resolved server-side.
-  const promptKey = normalizePromptKey(body?.promptKey);
   const wasRepair = body?.purpose === "repair";
-  const runId = body?.runId ?? null;
+  const runId = normalizeRunId(body?.runId);
+  const feature = normalizeFeature(body?.feature);
+  const attributePrompt =
+    typeof body?.attributePrompt === "string" && body.attributePrompt.trim()
+      ? body.attributePrompt
+      : prompt;
+
+  // Usage check before the provider call, so a call over the limit costs
+  // nothing. Later calls of an already-counted run are waved through inside
+  // checkUsageAllowed — a half-generated resume must not be stranded.
+  const decision = await checkUsageAllowed({
+    userId: user.id,
+    subscription,
+    feature,
+    runId,
+  });
+  if (!decision.allowed) return usageLimitResponse(decision);
+
   const startedAt = Date.now();
 
   try {
@@ -63,12 +80,11 @@ export async function POST(request) {
       file: normalizeFile(body.file),
     });
 
-    // Not awaited: metering must not add latency to a call the user is waiting
-    // on, and recordLlmCall swallows its own failures.
-    recordLlmCall({
+    const promptId = await recordLlmCall({
       userId: user.id,
-      promptKey,
+      prompt: attributePrompt,
       runId,
+      feature,
       wasRepair,
       provider,
       model,
@@ -78,14 +94,13 @@ export async function POST(request) {
       succeeded: true,
     });
 
-    return Response.json({ text });
+    return Response.json({ text, promptId });
   } catch (error) {
-    // Failed calls are recorded too — a prompt that reliably makes a model fall
-    // over is exactly what a per-prompt failure rate is meant to surface.
     recordLlmCall({
       userId: user.id,
-      promptKey,
+      prompt: attributePrompt,
       runId,
+      feature,
       wasRepair,
       provider,
       model,

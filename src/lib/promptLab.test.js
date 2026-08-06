@@ -2,14 +2,20 @@ import { describe, it, expect } from "vitest";
 import {
   CHALLENGER_PLACEHOLDERS,
   CHALLENGER_SEEDS,
+  PRODUCTION_TEMPLATES,
   adaptChallengerQuestions,
   formatProfileForPrompt,
   formatWorkHistoryForPrompt,
+  isProductionLabPrompt,
   renderPromptTemplate,
 } from "./promptLab";
-import { validateOpeningQuestions } from "./enrichExperience";
-import { validateMissingExperienceReview } from "./reviewExperience";
-import { validateClarityReview } from "./clarifyExperience";
+import { buildClarityReviewPrompt, validateClarityReview } from "./clarifyExperience";
+import { buildOpeningQuestionsPrompt, validateOpeningQuestions } from "./enrichExperience";
+import {
+  MAX_MISSING_EXPERIENCE_ITEMS,
+  buildMissingExperienceReviewPrompt,
+  validateMissingExperienceReview,
+} from "./reviewExperience";
 
 const exampleSchemaOf = (seed) =>
   seed.match(/<ExampleSchema>\s*([\s\S]*?)\s*<\/ExampleSchema>/)?.[1] ?? "";
@@ -157,5 +163,53 @@ describe("challenger seeds", () => {
       expect(Array.isArray(parsed.questions)).toBe(true);
       expect(parsed.questions).toHaveLength(3);
     }
+  });
+});
+
+describe("production templates", () => {
+  it("are always available to snap back to for every lab feature", () => {
+    for (const feature of Object.keys(CHALLENGER_SEEDS)) {
+      expect(PRODUCTION_TEMPLATES[feature]).toBeTruthy();
+      expect(isProductionLabPrompt(feature, PRODUCTION_TEMPLATES[feature])).toBe(true);
+      expect(isProductionLabPrompt(feature, CHALLENGER_SEEDS[feature])).toBe(false);
+    }
+  });
+
+  it("clarity production template fills to the same prompt the builder ships", () => {
+    const position = "Data Scientist";
+    const description = "- Built churn models";
+    expect(
+      renderPromptTemplate(PRODUCTION_TEMPLATES.clarity, {
+        jobTitle: position,
+        experienceDetails: description,
+      })
+    ).toBe(buildClarityReviewPrompt({ position, description }));
+  });
+
+  it("expand production template fills to the same prompt the builder ships", () => {
+    const args = {
+      position: "Line Cook",
+      company: "Bistro",
+      description: "- Ran the grill",
+      tenure: "2 years",
+    };
+    const filled = renderPromptTemplate(PRODUCTION_TEMPLATES.expand, {
+      jobTitle: args.position,
+      companyClause: ` at ${args.company}`,
+      tenureBlock: `\n\n<tenure>\nAbout ${args.tenure} in the role.\n</tenure>`,
+      experienceDetails: args.description,
+    });
+    expect(filled).toBe(buildOpeningQuestionsPrompt(args));
+  });
+
+  it("gap production template fills to the same prompt the builder ships", () => {
+    const workHistory = [{ id: "w1", position: "Analyst", company: "Acme", description: "- SQL" }];
+    const jobDescription = "Need SQL and stakeholder storytelling.";
+    const filled = renderPromptTemplate(PRODUCTION_TEMPLATES.gap, {
+      workHistoryJson: JSON.stringify(workHistory, null, 2),
+      jobDescription,
+      maxItems: String(MAX_MISSING_EXPERIENCE_ITEMS),
+    });
+    expect(filled).toBe(buildMissingExperienceReviewPrompt({ workHistory, jobDescription }));
   });
 });

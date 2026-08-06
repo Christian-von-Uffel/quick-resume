@@ -1,4 +1,10 @@
 import { formatRoleWindow } from "./generateResume";
+import { CLARITY_REVIEW_PROMPT_TEMPLATE } from "./clarifyExperience";
+import { EXPANSION_OPENING_PROMPT_TEMPLATE } from "./enrichExperience";
+import { GAP_REVIEW_PROMPT_TEMPLATE, MAX_MISSING_EXPERIENCE_ITEMS } from "./reviewExperience";
+import { renderPromptTemplate } from "./promptTemplate";
+
+export { renderPromptTemplate };
 
 // Pure helpers for the prompt lab (src/components/PromptLab.jsx): the
 // challenger prompt templates the lab seeds its editors with, the `$name`
@@ -6,24 +12,36 @@ import { formatRoleWindow } from "./generateResume";
 // sendable prompt, and the adapter that lets a minimal challenger schema flow
 // through the PRODUCTION validators and UI components.
 //
-// Challengers are deliberately NOT entries in src/lib/prompts.js. That catalog
-// is the versioned record of what production ships; a lab prompt is an
-// experiment, so its calls go out with no promptKey and land in llm_calls with
-// prompt_id null (see app/(product)/app/lab/page.jsx).
+// Every prompt body — production or challenger — is saved in public.prompts
+// via ensure_prompt. The lab picker reads that table.
 
-/* ── Template rendering ────────────────────────────────────── */
-// Replace `$name` tokens with values. Longest names first, so `$jobTitle`
-// is never half-eaten by a shorter `$job`. split/join instead of a regex
-// replace keeps `$` characters inside VALUES (salaries, "$100k") literal.
-// Unknown tokens stay in the text on purpose — the lab shows the exact prompt
-// it sent, so a typo'd placeholder is visible instead of silently blank.
-export function renderPromptTemplate(template, variables = {}) {
-  let text = String(template ?? "");
-  const names = Object.keys(variables).sort((a, b) => b.length - a.length);
-  for (const name of names) {
-    text = text.split(`$${name}`).join(String(variables[name] ?? ""));
-  }
-  return text;
+/* ── Production templates (always available to snap back to) ─
+   These are the same strings the production builders fill. Loading one into
+   the challenger editor and running B uses the production code path, so
+   "Production (shipped)" is a real undo — not a best-effort copy. */
+
+export const PRODUCTION_GENERATE_PIPELINE_TEMPLATE = `[Production pipeline]
+
+Column B will run the same three-step generation pipeline as column A
+(analyze job → select evidence → compose resume).
+
+Pick Starter seed or a saved draft when you want a single-call challenger instead.`;
+
+export const PRODUCTION_TEMPLATES = {
+  clarity: CLARITY_REVIEW_PROMPT_TEMPLATE,
+  expand: EXPANSION_OPENING_PROMPT_TEMPLATE,
+  gap: GAP_REVIEW_PROMPT_TEMPLATE,
+  generate: PRODUCTION_GENERATE_PIPELINE_TEMPLATE,
+};
+
+export function normalizeLabPromptText(template) {
+  return String(template ?? "").trim();
+}
+
+export function isProductionLabPrompt(feature, template) {
+  const production = PRODUCTION_TEMPLATES[feature];
+  if (!production) return false;
+  return normalizeLabPromptText(template) === normalizeLabPromptText(production);
 }
 
 /* ── Placeholder values from the person's real data ────────── */
@@ -202,12 +220,16 @@ export const CHALLENGER_PLACEHOLDERS = {
   expand: [
     ["$jobTitle", "the selected position's title"],
     ["$company", "the selected position's company"],
+    ["$companyClause", "` at Company` or empty (production prompt)"],
     ["$experienceDetails", "the experience description being expanded"],
     ["$tenure", "roughly how long they've held the role"],
+    ["$tenureBlock", "optional <tenure> block (production prompt)"],
   ],
   gap: [
-    ["$workHistory", "every saved role with dates and details"],
+    ["$workHistory", "every saved role as readable text (challenger seeds)"],
+    ["$workHistoryJson", "every saved role as JSON (production prompt)"],
     ["$jobDescription", "the pasted job description"],
+    ["$maxItems", `gap cap (${MAX_MISSING_EXPERIENCE_ITEMS})`],
   ],
   generate: [
     ["$profile", "name, headline, contact, education"],

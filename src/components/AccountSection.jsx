@@ -24,6 +24,20 @@ function describeBilling(subscription) {
   return `Subscription ${subscription.status.replace(/_/g, " ")}`;
 }
 
+// "7 of 10 trial resumes used" — so the allowance is something you watch, not
+// something you discover by being stopped. Absent when no cap is in force.
+function describeAllowance(allowance) {
+  if (!allowance || typeof allowance.limit !== "number") return "";
+  const { used, limit, remaining, isTrial } = allowance;
+  const scope = isTrial ? "trial" : "this billing period's";
+  if (remaining === 0) {
+    return isTrial
+      ? `All ${limit} trial resumes used — subscribe to keep generating`
+      : `All ${limit} resumes used this billing period`;
+  }
+  return `${used} of ${limit} ${scope} resumes used`;
+}
+
 export function AccountSection() {
   const [email, setEmail] = useState("");
   const [signingOut, setSigningOut] = useState(false);
@@ -86,6 +100,11 @@ export function AccountSection() {
           </p>
           {subscription && (
             <p className="mt-1 text-xs text-neutral-500">{describeBilling(subscription)}</p>
+          )}
+          {describeAllowance(subscription?.resumeAllowance) && (
+            <p className="mt-1 text-xs text-neutral-500">
+              {describeAllowance(subscription.resumeAllowance)}
+            </p>
           )}
         </div>
         <div className="flex flex-wrap gap-2">

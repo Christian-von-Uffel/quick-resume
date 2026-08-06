@@ -1,0 +1,130 @@
+/*
+  Privacy and terms. Deliberately its own small stylesheet rather than new
+  selectors in landing.css: that file is a hand-tuned marketing page, and long
+  prose documents want different rules than a landing section does. The chrome
+  (.nav, .container, .footer, .btn) is still landing.css, so the pages read as
+  part of the same site.
+*/
+
+.legal {
+  padding: 140px 0 80px;
+}
+
+.legal-doc {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.legal-eyebrow {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+.legal-doc h1 {
+  font-size: clamp(32px, 5vw, 44px);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 12px;
+}
+
+.legal-updated {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 0 0 40px;
+}
+
+.legal-doc h2 {
+  font-size: 21px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  margin: 44px 0 12px;
+}
+
+.legal-doc h3 {
+  font-size: 16px;
+  margin: 28px 0 8px;
+}
+
+.legal-doc p,
+.legal-doc li {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--body);
+}
+
+.legal-doc p {
+  margin: 0 0 16px;
+}
+
+.legal-doc ul {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+
+.legal-doc li {
+  margin-bottom: 8px;
+}
+
+.legal-doc a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.legal-doc strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* The one thing on these pages a reader is most likely to be looking for. */
+.legal-callout {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin: 0 0 16px;
+  background: var(--bg-soft);
+}
+
+.legal-callout p:last-child {
+  margin-bottom: 0;
+}
+
+.legal-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 20px;
+  font-size: 15px;
+}
+
+.legal-table th,
+.legal-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  line-height: 1.6;
+}
+
+.legal-table th {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.legal-table td {
+  color: var(--body);
+}
+
+/* Tables of processors are the widest thing here and the first to overflow. */
+.legal-scroll {
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .legal {
+    padding: 110px 0 60px;
+  }
+}

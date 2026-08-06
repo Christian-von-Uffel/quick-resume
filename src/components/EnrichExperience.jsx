@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { MAX_QA_ROUNDS } from "../lib/enrichExperience";
-import { PROMPTS } from "../lib/prompts";
 import {
   newMetricId,
   startExperienceExpansion,
@@ -112,11 +111,11 @@ export function EnrichExperience({
 
   // One row per question on screen, keyed by question id so answering or
   // skipping can find it later.
-  const rememberQuestions = (found, roundNumber, promptKey) => {
+  const rememberQuestions = (found, roundNumber, promptId = null) => {
     const ids = recordQuestionsPresented(
       { experienceExpansionId: expansionIdRef.current },
       found.map((question) => ({
-        promptKey,
+        promptId,
         question: question.question,
         options: question.options ?? [],
         round: roundNumber,
@@ -133,12 +132,16 @@ export function EnrichExperience({
     setLoadingKind("opening");
     setError("");
     try {
+      let openingPromptId = null;
       const found = await loadOpening({
         position,
         company,
         description,
         tenureLabel,
         runId: expansionIdRef.current,
+        onPromptId: (id) => {
+          openingPromptId = id;
+        },
       });
       if (cancelledRef.current) return;
       if (!found.length) {
@@ -146,8 +149,13 @@ export function EnrichExperience({
         setStatus("error");
         return;
       }
-      startExperienceExpansion({ id: expansionIdRef.current, position, company });
-      rememberQuestions(found, 1, PROMPTS.EXPANSION_OPENING);
+      startExperienceExpansion({
+        id: expansionIdRef.current,
+        position,
+        company,
+        promptId: openingPromptId,
+      });
+      rememberQuestions(found, 1, openingPromptId);
       setQuestions(withRuntimeState(found));
       setRound(1);
       setStatus("answering");
@@ -164,6 +172,7 @@ export function EnrichExperience({
     setLoadingKind("followups");
     setError("");
     try {
+      let followupPromptId = null;
       const result = await loadFollowups({
         position,
         company,
@@ -172,6 +181,9 @@ export function EnrichExperience({
         transcript: currentTranscript,
         round: nextRound,
         runId: expansionIdRef.current,
+        onPromptId: (id) => {
+          followupPromptId = id;
+        },
       });
       if (cancelledRef.current) return;
       // Model says it knows enough, or the batch came back empty — write it up.
@@ -179,7 +191,7 @@ export function EnrichExperience({
         runCompose(currentTranscript);
         return;
       }
-      rememberQuestions(result.questions, nextRound, PROMPTS.EXPANSION_FOLLOWUP);
+      rememberQuestions(result.questions, nextRound, followupPromptId);
       setQuestions(withRuntimeState(result.questions));
       setRound(nextRound);
       setStatus("answering");
@@ -196,6 +208,7 @@ export function EnrichExperience({
     setLoadingKind("compose");
     setError("");
     try {
+      let composePromptId = null;
       const composed = await composeBullets({
         position,
         company,
@@ -203,6 +216,9 @@ export function EnrichExperience({
         tenureLabel,
         transcript: finalTranscript,
         runId: expansionIdRef.current,
+        onPromptId: (id) => {
+          composePromptId = id;
+        },
       });
       if (cancelledRef.current) return;
       if (!composed.length) {
@@ -219,7 +235,7 @@ export function EnrichExperience({
           resolution: null,
           suggestionId: recordSuggestionPresented(
             { experienceExpansionId: expansionIdRef.current },
-            { suggestion: text, promptKey: PROMPTS.EXPANSION_COMPOSE }
+            { suggestion: text, promptId: composePromptId }
           ),
         }))
       );

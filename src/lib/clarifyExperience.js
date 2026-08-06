@@ -1,5 +1,6 @@
 import { normalizeStoredList } from "./resumeModel";
 import { cleanFormattedDetail } from "./reviewExperience";
+import { renderPromptTemplate } from "./promptTemplate";
 
 // The stages of the initial clarity scan, in the order the UI reports progress.
 // The LLM call covers step 1; step 2 is the local pass that validates questions
@@ -14,15 +15,10 @@ export const CLARITY_REWRITE_STEPS = [
   { id: "rewrite", label: "Writing a clearer version of this sentence" },
 ];
 
-// Ask the model to flag the work-history sentences that are hardest to read and,
-// for each, pose a plain "what do you mean by this?" question with a few concrete
-// interpretations the person can pick from. The position title is passed only as
-// context for what the work likely involved — never as license to invent facts.
-export function buildClarityReviewPrompt({ position, description }) {
-  const roleContext = position?.trim() ? position.trim() : "this role";
-
-  return `<task>
-You are reviewing the bullet points from a resume work-history entry for the role "${roleContext}".
+// Shipped clarity-review prompt as a lab-loadable template. Placeholders match
+// the challenger editor; buildClarityReviewPrompt fills them the same way.
+export const CLARITY_REVIEW_PROMPT_TEMPLATE = `<task>
+You are reviewing the bullet points from a resume work-history entry for the role "$jobTitle".
 1. Find the sentences that are hardest for a reader to understand — vague, jargon-heavy, ambiguous, or unclear about what the person actually did or achieved.
 2. For each confusing sentence, write a simple, conversational question asking what the person meant.
 3. Offer up to three concrete interpretations of what the sentence could mean, so the person can just pick the one that matches.
@@ -30,11 +26,11 @@ You are reviewing the bullet points from a resume work-history entry for the rol
 </task>
 
 <role_title>
-${roleContext}
+$jobTitle
 </role_title>
 
 <description>
-${description}
+$experienceDetails
 </description>
 
 <instructions>
@@ -68,6 +64,17 @@ ${description}
   ]
 }
 </schema>`;
+
+// Ask the model to flag the work-history sentences that are hardest to read and,
+// for each, pose a plain "what do you mean by this?" question with a few concrete
+// interpretations the person can pick from. The position title is passed only as
+// context for what the work likely involved — never as license to invent facts.
+export function buildClarityReviewPrompt({ position, description }) {
+  const roleContext = position?.trim() ? position.trim() : "this role";
+  return renderPromptTemplate(CLARITY_REVIEW_PROMPT_TEMPLATE, {
+    jobTitle: roleContext,
+    experienceDetails: description ?? "",
+  });
 }
 
 function normalizeConfusingSentence(value) {

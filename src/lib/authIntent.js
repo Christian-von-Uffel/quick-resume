@@ -56,9 +56,19 @@ export function readIntent(searchLike) {
 // Shape written to auth.users.raw_user_meta_data at link-request time, via
 // signInWithOtp's `data` option. Namespaced under pending_intent so it is
 // obvious this is a one-shot instruction and not durable profile data.
-export function intentToUserMetadata(intent) {
-  if (!intent?.next) return undefined;
-  return { pending_intent: { next: intent.next } };
+//
+// `attribution` rides along on the same trip for the same reason the intent
+// does: the Google click id is only in the tab that requested the link, and the
+// account is created on the far side of an inbox hop. Unlike pending_intent it
+// is *not* cleared after sign-in — it is what lets a paid conversion months
+// later be reported back to the click that bought it.
+export function intentToUserMetadata(intent, attribution) {
+  const metadata = {};
+
+  if (intent?.next) metadata.pending_intent = { next: intent.next };
+  if (attribution?.gclid) metadata.ad_attribution = { gclid: attribution.gclid };
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 // Where to land after a verified sign-in. Metadata wins: it is the copy that

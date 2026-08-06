@@ -5,39 +5,26 @@
 // but what a call actually cost has to be recorded where the user can't reach
 // it — quotas will be enforced off this table.
 //
-// The client says which prompt ran (a key) and which run it belongs to; the key
-// is resolved to a prompts.id here rather than trusting a raw id from the
-// browser. Everything else — provider, model, tokens, duration, outcome — is
-// observed on this side.
+// The prompt body that was sent is find-or-inserted into public.prompts here,
+// and the resulting id is stamped on the llm_calls row.
 
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import { PROMPT_VERSIONS } from "../prompts";
+import { normalizePromptBody } from "../prompts";
 
-// key@version → prompts.id. The catalog only changes on deploy (a new version
-// means a new migration and a new build), so a process-lifetime cache is safe
-// and keeps a lookup off the hot path of every call.
 const promptIdCache = new Map();
 
-async function resolvePromptId(promptKey) {
-  if (!promptKey) return null;
-  const version = PROMPT_VERSIONS[promptKey];
-  if (!version) return null;
+async function ensurePromptId(prompt) {
+  const body = normalizePromptBody(prompt);
+  if (!body) return null;
+  if (promptIdCache.has(body)) return promptIdCache.get(body);
 
-  const cacheKey = `${promptKey}@${version}`;
-  if (promptIdCache.has(cacheKey)) return promptIdCache.get(cacheKey);
-
-  const { data, error } = await getSupabaseAdmin()
-    .from("prompts")
-    .select("id")
-    .eq("key", promptKey)
-    .eq("version", version)
-    .maybeSingle();
-
-  // Don't cache a miss: a row that hasn't been migrated in yet should start
-  // resolving as soon as it exists, without a redeploy.
-  if (error || !data?.id) return null;
-  promptIdCache.set(cacheKey, data.id);
-  return data.id;
+  const { data, error } = await getSupabaseAdmin().rpc("ensure_prompt", { p_prompt: body });
+  if (error || typeof data !== "string" || !data) {
+    if (error) console.warn("[prompts] ensure_prompt failed:", error.message);
+    return null;
+  }
+  promptIdCache.set(body, data);
+  return data;
 }
 
 // A uuid from the browser is only ever a correlation key (llm_calls.run_id is
@@ -49,16 +36,14 @@ export function normalizeRunId(value) {
   return typeof value === "string" && UUID_PATTERN.test(value) ? value : null;
 }
 
-export function normalizePromptKey(value) {
-  return typeof value === "string" && Object.hasOwn(PROMPT_VERSIONS, value) ? value : "";
-}
-
 // Fire-and-forget: a metering write must never fail a call the user already
-// paid for, so this swallows its own errors. Callers don't await it.
+// paid for, so this swallows its own errors. Resolves the prompts.id first so
+// the HTTP response can hand it back; the llm_calls insert is not awaited.
 export async function recordLlmCall({
   userId,
-  promptKey = "",
+  prompt = "",
   runId = null,
+  feature = "",
   provider = "",
   model = "",
   inputTokens = 0,
@@ -68,13 +53,21 @@ export async function recordLlmCall({
   wasRepair = false,
   succeeded = true,
 }) {
+  let promptId = null;
   try {
-    await getSupabaseAdmin()
+    promptId = await ensurePromptId(prompt);
+  } catch (error) {
+    console.warn("[llm_calls] prompt resolve failed:", error?.message ?? error);
+  }
+
+  try {
+    void getSupabaseAdmin()
       .from("llm_calls")
       .insert({
         user_id: userId,
-        prompt_id: await resolvePromptId(promptKey),
+        prompt_id: promptId,
         run_id: normalizeRunId(runId),
+        feature,
         provider,
         model,
         input_tokens: inputTokens,
@@ -83,8 +76,13 @@ export async function recordLlmCall({
         duration_ms: Math.max(0, Math.round(durationMs)),
         was_repair: wasRepair,
         succeeded,
+      })
+      .then(({ error }) => {
+        if (error) console.warn("[llm_calls] failed to record:", error.message);
       });
   } catch (error) {
     console.warn("[llm_calls] failed to record:", error?.message ?? error);
   }
+
+  return promptId;
 }

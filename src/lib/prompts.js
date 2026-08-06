@@ -1,50 +1,41 @@
-// The code-side twin of the `prompts` table.
+// The `prompts` table: one row per distinct prompt body (`id`, `prompt`,
+// `created_at`). No keys, no versions — the text is the identity.
 //
-// Every key here has a matching row in public.prompts. Writes carry a
-// (key, version) pair, which is resolved to a prompts.id and stored as a
-// foreign key — that FK is what makes prompt performance comparable.
-//
-// CHANGING A PROMPT: bump its version here AND insert the matching row in a
-// migration. Rows already written keep pointing at the old version, which is
-// exactly what lets you compare v1 against v2. Editing a prompt builder
-// without bumping silently mixes two prompts under one id.
+// Server and browser both resolve a body to an id via the ensure_prompt RPC
+// (find-or-insert). Product runs stamp that id onto clarity_reviews,
+// experience_expansions, job_gap_analyses, resume_generations, and onto
+// questions / suggestions / llm_calls for per-call attribution.
 
-export const PROMPTS = {
-  IMPORT_EXTRACT: "import_extract",
+export function normalizePromptBody(value) {
+  return String(value ?? "").trim();
+}
 
-  CLARITY_REVIEW: "clarity_review",
-  CLARITY_REWRITE: "clarity_rewrite",
+export function labelForPrompt(prompt) {
+  const text = String(prompt ?? "");
+  const query = text.match(/<Query>\s*([\s\S]*?)\s*<\/Query>/i)?.[1]?.trim();
+  const task = text.match(/<task>\s*([\s\S]*?)\s*<\/task>/i)?.[1]?.trim();
+  const source = (
+    query ||
+    task ||
+    text.split("\n").map((line) => line.trim()).find(Boolean) ||
+    "Untitled prompt"
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+  return source.length > 72 ? `${source.slice(0, 71)}…` : source;
+}
 
-  EXPANSION_OPENING: "expansion_opening",
-  EXPANSION_FOLLOWUP: "expansion_followup",
-  EXPANSION_COMPOSE: "expansion_compose",
-
-  GAP_REVIEW: "gap_review",
-  GAP_ELABORATION: "gap_elaboration",
-
-  GENERATION_ANALYSIS: "generation_analysis",
-  GENERATION_EVIDENCE: "generation_evidence",
-  GENERATION_COMPOSE: "generation_compose",
-
-  JOB_DESCRIPTION_CLEAN: "job_description_clean",
-};
-
-// key → the version of that prompt this build ships.
-export const PROMPT_VERSIONS = {
-  [PROMPTS.IMPORT_EXTRACT]: 1,
-  [PROMPTS.CLARITY_REVIEW]: 1,
-  [PROMPTS.CLARITY_REWRITE]: 1,
-  [PROMPTS.EXPANSION_OPENING]: 1,
-  [PROMPTS.EXPANSION_FOLLOWUP]: 1,
-  [PROMPTS.EXPANSION_COMPOSE]: 1,
-  [PROMPTS.GAP_REVIEW]: 1,
-  [PROMPTS.GAP_ELABORATION]: 1,
-  [PROMPTS.GENERATION_ANALYSIS]: 1,
-  [PROMPTS.GENERATION_EVIDENCE]: 1,
-  [PROMPTS.GENERATION_COMPOSE]: 1,
-  [PROMPTS.JOB_DESCRIPTION_CLEAN]: 1,
-};
-
-export function isKnownPrompt(key) {
-  return typeof key === "string" && Object.hasOwn(PROMPT_VERSIONS, key);
+/**
+ * Find or insert a prompts row for this body. Returns the uuid, or null when
+ * the body is empty / the call fails.
+ */
+export async function ensurePromptId(supabase, prompt) {
+  const body = normalizePromptBody(prompt);
+  if (!supabase || !body) return null;
+  const { data, error } = await supabase.rpc("ensure_prompt", { p_prompt: body });
+  if (error) {
+    console.warn("[prompts] ensure_prompt failed:", error.message);
+    return null;
+  }
+  return typeof data === "string" && data ? data : null;
 }

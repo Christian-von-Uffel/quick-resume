@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "../../../src/lib/supabase/client";
+import { reportConversion } from "../../../src/lib/ads";
+import { MONTHLY_PRICE } from "../../../src/lib/constants";
 
 // What non-subscribers see instead of the editor: start the card-upfront
 // trial, or — right after checkout — a short "activating" wait while the
@@ -24,6 +26,15 @@ export default function TrialGate({ status, justCheckedOut }) {
         const response = await fetch("/api/subscription");
         const data = await response.json();
         if (!cancelled && data.hasAccess) {
+          // Before the reload, not after: the replace tears this page down, and
+          // /app carries no marker that a trial just started. Attribution here
+          // is partial by design — the ad click's gclid usually died in the
+          // inbox hop — so this is an observation conversion, and Stripe stays
+          // the number the campaign is judged on.
+          reportConversion("trial_started", {
+            value: MONTHLY_PRICE,
+            once: "trial_started",
+          });
           window.location.replace("/app");
           return;
         }

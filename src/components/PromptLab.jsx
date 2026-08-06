@@ -45,18 +45,27 @@ import {
   validateJobAnalysis,
   validateSelectedResumeEvidence,
 } from "../lib/generateResume";
-import { normalizeDetailForComparison, normalizeProfile, normalizeWorkHistoryItem } from "../lib/resumeModel";
+import {
+  normalizeDetailForComparison,
+  normalizeProfile,
+  normalizeWorkHistoryItem,
+  sortWorkHistory,
+} from "../lib/resumeModel";
 import { formatMonthSpan, getRoleInterval, summarizeCoverage } from "../lib/workHistoryTimeline";
 import { auditValidation, describeDrops } from "../lib/labAudit";
 import { newMetricId } from "../lib/metrics";
 import {
   CHALLENGER_PLACEHOLDERS,
   CHALLENGER_SEEDS,
+  PRODUCTION_TEMPLATES,
   adaptChallengerQuestions,
   formatProfileForPrompt,
   formatWorkHistoryForPrompt,
+  isProductionLabPrompt,
+  normalizeLabPromptText,
   renderPromptTemplate,
 } from "../lib/promptLab";
+import { ensurePromptId, labelForPrompt } from "../lib/prompts";
 import { createClient } from "../lib/supabase/client";
 import { EnrichExperience } from "./EnrichExperience";
 import { ExperienceReview } from "./ExperienceReview";
@@ -71,13 +80,13 @@ import { PipelineSteps } from "./PipelineSteps";
 // input tells you nothing.
 //
 // Ground rules:
-// - Calls carry no promptKey, so their cost lands in llm_calls with prompt_id
-//   null and never pollutes per-prompt production metrics. Product metrics
-//   (questions/suggestions/…) are inert here because configureMetrics is never
-//   called on this route.
+// - Every model call find-or-inserts its prompt body into public.prompts and
+//   stamps prompt_id on llm_calls (and product runs). Lab drafts use the same
+//   table via ensure_prompt — there is no separate lab_prompts store.
 // - Accept / Add to description write the updated role description back to the
 //   person's work_history row (same as the editor). Generated resumes and gap
 //   previews stay display-only.
+// - Product metrics stay inert here because configureMetrics is never called.
 
 /* ── Shared bits ───────────────────────────────────────────── */
 
@@ -310,22 +319,206 @@ function ResultBlock({ label, text }) {
   );
 }
 
-function ChallengerEditor({ feature, value, onChange }) {
+function formatSavedAt(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+// Challenger template state for one feature. Drafts and production bodies are
+// both rows in public.prompts — Run B / Use this prompt call ensure_prompt.
+function useChallengerTemplate(feature, { initialPrompts, getSupabase }) {
+  const [template, setTemplate] = useState(CHALLENGER_SEEDS[feature]);
+  const [entries, setEntries] = useState(() => initialPrompts ?? []);
+  const [activeId, setActiveId] = useState(null);
+  const [status, setStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const statusTimeoutRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(statusTimeoutRef.current), []);
+
+  const showStatus = useCallback((message) => {
+    setStatus(message);
+    clearTimeout(statusTimeoutRef.current);
+    statusTimeoutRef.current = setTimeout(() => setStatus(""), 2500);
+  }, []);
+
+  const remember = useCallback(
+    async (text = template) => {
+      const body = normalizeLabPromptText(text);
+      if (!body) return null;
+      try {
+        setSaving(true);
+        const id = await ensurePromptId(getSupabase(), body);
+        if (!id) {
+          showStatus("Couldn't save that prompt to the database.");
+          return null;
+        }
+        setActiveId(id);
+        setEntries((current) => {
+          const without = current.filter((entry) => entry.id !== id);
+          return [
+            {
+              id,
+              template: body,
+              label: labelForPrompt(body),
+              savedAt: new Date().toISOString(),
+              isProduction: isProductionLabPrompt(feature, body),
+            },
+            ...without,
+          ];
+        });
+        return id;
+      } catch (error) {
+        console.error("Failed to save prompt:", error);
+        showStatus("Couldn't save that prompt to the database.");
+        return null;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [feature, template, getSupabase, showStatus]
+  );
+
+  const adopt = useCallback(async () => {
+    const id = await remember();
+    if (!id) {
+      if (!normalizeLabPromptText(template)) showStatus("Write a prompt before adopting it.");
+      return;
+    }
+    showStatus(
+      isProductionLabPrompt(feature, template)
+        ? "Back on the shipped production prompt."
+        : "Prompt saved — you can reload it from the picker anytime."
+    );
+  }, [feature, template, remember, showStatus]);
+
+  const loadEntry = useCallback(
+    (id) => {
+      if (id === "production") {
+        setTemplate(PRODUCTION_TEMPLATES[feature]);
+        setActiveId(null);
+        return;
+      }
+      if (id === "seed") {
+        setTemplate(CHALLENGER_SEEDS[feature]);
+        setActiveId(null);
+        return;
+      }
+      const entry = entries.find((item) => item.id === id);
+      if (entry) {
+        setTemplate(entry.template);
+        setActiveId(entry.id);
+      }
+    },
+    [feature, entries]
+  );
+
+  return {
+    template,
+    setTemplate,
+    library: entries,
+    adoptedId: activeId,
+    status,
+    saving,
+    adopt,
+    loadEntry,
+    rememberTested: remember,
+  };
+}
+
+function ChallengerEditor({
+  feature,
+  value,
+  onChange,
+  library,
+  adoptedId,
+  onAdopt,
+  onLoad,
+  status,
+  saving = false,
+}) {
   const placeholders = CHALLENGER_PLACEHOLDERS[feature] ?? [];
+  const normalized = normalizeLabPromptText(value);
+  const isProduction = isProductionLabPrompt(feature, value);
+  const isSeed = normalized === normalizeLabPromptText(CHALLENGER_SEEDS[feature]);
+  const matchingId =
+    library.find((entry) => normalizeLabPromptText(entry.template) === normalized)?.id ?? "";
+  const selectValue = isProduction
+    ? "production"
+    : isSeed
+      ? "seed"
+      : matchingId || "custom";
+  const history = library.filter(
+    (entry) =>
+      normalizeLabPromptText(entry.template) !== normalizeLabPromptText(PRODUCTION_TEMPLATES[feature]) &&
+      normalizeLabPromptText(entry.template) !== normalizeLabPromptText(CHALLENGER_SEEDS[feature])
+  );
+
   return (
     <div className="mt-4 rounded-xl border border-violet-500/40 bg-violet-500/5 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-violet-600 dark:text-violet-300">
           Challenger prompt (column B)
         </p>
-        <button
-          type="button"
-          onClick={() => onChange(CHALLENGER_SEEDS[feature])}
-          className="rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
-        >
-          Reset to seed
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onChange(CHALLENGER_SEEDS[feature])}
+            className="rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
+          >
+            Reset to seed
+          </button>
+          <button type="button" onClick={onAdopt} disabled={saving} className={primaryButtonClass}>
+            {saving ? "Saving…" : "Use this prompt"}
+          </button>
+        </div>
       </div>
+
+      <div className="mt-3">
+        <label
+          htmlFor={`lab-prompt-history-${feature}`}
+          className="text-xs font-medium uppercase tracking-widest text-neutral-500"
+        >
+          Load a prompt
+        </label>
+        <select
+          id={`lab-prompt-history-${feature}`}
+          value={selectValue}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (next === "custom") return;
+            onLoad?.(next);
+          }}
+          className={`${inputClass} mt-1`}
+        >
+          {selectValue === "custom" ? (
+            <option value="custom">Current editor (unsaved edits)</option>
+          ) : null}
+          <option value="production">Production (shipped)</option>
+          <option value="seed">Starter seed</option>
+          {history.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.id === adoptedId ? "★ " : ""}
+              {entry.isProduction ? "Production · " : ""}
+              {entry.label}
+              {entry.savedAt ? ` — ${formatSavedAt(entry.savedAt)}` : ""}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-neutral-500">
+          Every prompt you run or save lands in the prompts table — production and lab alike.
+        </p>
+        {status ? <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-300">{status}</p> : null}
+      </div>
+
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -709,10 +902,15 @@ function ClarityFlowColumn({
   useRunSignal(runSignal, variantKey, start);
 
   const reviewSentences = async ({ position: pos, description: desc }) => {
-    const prompt = isChallenger
-      ? renderPromptTemplate(template, { jobTitle: pos, company, experienceDetails: desc })
-      : buildClarityReviewPrompt({ position: pos, description: desc });
-    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current });
+    const useProduction = !isChallenger || isProductionLabPrompt("clarity", template);
+    const prompt = useProduction
+      ? buildClarityReviewPrompt({ position: pos, description: desc })
+      : renderPromptTemplate(template, {
+          jobTitle: pos?.trim() ? pos.trim() : "this role",
+          company,
+          experienceDetails: desc ?? "",
+        });
+    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
     const audit = auditClarityReview(parsed);
     log({
       label: "Find confusing sentences",
@@ -726,7 +924,7 @@ function ClarityFlowColumn({
 
   const proposeRewrite = async ({ position: pos, sentence, clarification, skills }) => {
     const prompt = buildClaritySuggestionPrompt({ position: pos, sentence, clarification, skills });
-    const text = await callLlm(settings, prompt, null, { runId: runIdRef.current });
+    const text = await callLlm(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
     log({ label: `Rewrite “${truncate(sentence, 44)}”`, prompt, response: text });
     return cleanSuggestedSentence(text);
   };
@@ -754,7 +952,9 @@ function ClarityFlowColumn({
       title={isChallenger ? "Challenger" : "Production"}
       note={
         isChallenger
-          ? "Finds sentences with the challenger prompt; rewrites still use the production prompt."
+          ? isProductionLabPrompt("clarity", template)
+            ? "Using the shipped production prompt in column B."
+            : "Finds sentences with the challenger prompt; rewrites still use the production prompt."
           : "The exact flow shipped in the editor."
       }
     >
@@ -780,14 +980,14 @@ function ClarityFlowColumn({
   );
 }
 
-function ClarityLab({ workHistory, settings, onSaveDescription }) {
+function ClarityLab({ workHistory, settings, onSaveDescription, promptLibrary, getSupabase }) {
   const input = usePositionInput(workHistory);
-  const [template, setTemplate] = useState(CHALLENGER_SEEDS.clarity);
+  const challenger = useChallengerTemplate("clarity", { initialPrompts: promptLibrary, getSupabase });
   const [runSignal, setRunSignal] = useState(null);
 
   const disabled = !input.selected || !input.description.trim();
   const columnProps = {
-    template,
+    template: challenger.template,
     settings,
     workId: input.selected?.id ?? "",
     position: input.selected?.position ?? "",
@@ -820,9 +1020,22 @@ function ClarityLab({ workHistory, settings, onSaveDescription }) {
           })
         }
       />
-      <ChallengerEditor feature="clarity" value={template} onChange={setTemplate} />
+      <ChallengerEditor
+        feature="clarity"
+        value={challenger.template}
+        onChange={challenger.setTemplate}
+        library={challenger.library}
+        adoptedId={challenger.adoptedId}
+        onAdopt={challenger.adopt}
+        onLoad={challenger.loadEntry}
+        status={challenger.status}
+        saving={challenger.saving}
+      />
       <RunButtons
-        onRun={(target) => setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }))}
+        onRun={(target) => {
+          if (target === "B" || target === "both") challenger.rememberTested();
+          setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }));
+        }}
         disabled={disabled}
         disabledReason="Pick a position with a description first."
       />
@@ -865,16 +1078,21 @@ function ExpandFlowColumn({
   useRunSignal(runSignal, variantKey, start);
 
   const loadOpening = async ({ position: pos, company: co, description: desc, tenureLabel: tenure }) => {
-    const prompt = isChallenger
-      ? renderPromptTemplate(template, {
-          jobTitle: pos,
+    const useProduction = !isChallenger || isProductionLabPrompt("expand", template);
+    const prompt = useProduction
+      ? buildOpeningQuestionsPrompt({ position: pos, company: co, description: desc, tenure })
+      : renderPromptTemplate(template, {
+          jobTitle: pos?.trim() ? pos.trim() : "this role",
           company: co ?? "",
-          experienceDetails: desc,
+          companyClause: co?.trim() ? ` at ${co.trim()}` : "",
+          experienceDetails: desc?.trim() ? desc.trim() : "(they haven't written anything yet)",
           tenure: tenure ?? "",
-        })
-      : buildOpeningQuestionsPrompt({ position: pos, company: co, description: desc, tenure });
-    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current });
-    const adapted = isChallenger ? adaptChallengerQuestions(parsed) : parsed;
+          tenureBlock: tenure?.trim()
+            ? `\n\n<tenure>\nAbout ${tenure.trim()} in the role.\n</tenure>`
+            : "",
+        });
+    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
+    const adapted = useProduction ? parsed : adaptChallengerQuestions(parsed);
     const audit = auditQuestionRound(adapted, 1);
     log({
       label: "Opening questions",
@@ -903,7 +1121,7 @@ function ExpandFlowColumn({
       round,
       maxRounds: MAX_QA_ROUNDS,
     });
-    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current });
+    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
     const audit = auditQuestionRound(parsed, round);
     log({
       label: `Follow-up questions (round ${round})`,
@@ -929,7 +1147,7 @@ function ExpandFlowColumn({
       tenure,
       transcript,
     });
-    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current });
+    const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
     const audit = auditComposedBullets(parsed);
     log({
       label: "Compose bullets",
@@ -963,7 +1181,9 @@ function ExpandFlowColumn({
       title={isChallenger ? "Challenger" : "Production"}
       note={
         isChallenger
-          ? "Opens with the challenger prompt; follow-up rounds and the write-up still use the production prompts."
+          ? isProductionLabPrompt("expand", template)
+            ? "Using the shipped production opening prompt in column B."
+            : "Opens with the challenger prompt; follow-up rounds and the write-up still use the production prompts."
           : "The exact flow shipped in the editor."
       }
     >
@@ -991,14 +1211,14 @@ function ExpandFlowColumn({
   );
 }
 
-function ExpandLab({ workHistory, settings, onSaveDescription }) {
+function ExpandLab({ workHistory, settings, onSaveDescription, promptLibrary, getSupabase }) {
   const input = usePositionInput(workHistory);
-  const [template, setTemplate] = useState(CHALLENGER_SEEDS.expand);
+  const challenger = useChallengerTemplate("expand", { initialPrompts: promptLibrary, getSupabase });
   const [runSignal, setRunSignal] = useState(null);
 
   const disabled = !input.selected;
   const columnProps = {
-    template,
+    template: challenger.template,
     settings,
     workId: input.selected?.id ?? "",
     position: input.selected?.position ?? "",
@@ -1034,9 +1254,22 @@ function ExpandLab({ workHistory, settings, onSaveDescription }) {
           })
         }
       />
-      <ChallengerEditor feature="expand" value={template} onChange={setTemplate} />
+      <ChallengerEditor
+        feature="expand"
+        value={challenger.template}
+        onChange={challenger.setTemplate}
+        library={challenger.library}
+        adoptedId={challenger.adoptedId}
+        onAdopt={challenger.adopt}
+        onLoad={challenger.loadEntry}
+        status={challenger.status}
+        saving={challenger.saving}
+      />
       <RunButtons
-        onRun={(target) => setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }))}
+        onRun={(target) => {
+          if (target === "B" || target === "both") challenger.rememberTested();
+          setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }));
+        }}
         disabled={disabled}
         disabledReason="Add a work-history position first."
       />
@@ -1058,7 +1291,7 @@ function GapQuestionCard({ item, settings, runId, log, onPatch }) {
     onPatch({ formatStatus: "loading", formatError: "" });
     try {
       const prompt = formatExperienceElaboration({ question: item.question, answer: answerText });
-      const text = await callLlm(settings, prompt, null, { runId });
+      const text = await callLlm(settings, prompt, null, { runId, feature: "lab" });
       log({ label: `Format detail “${truncate(item.question, 44)}”`, prompt, response: text });
       onPatch({ formatted: cleanFormattedDetail(text) || answerText, formatStatus: "ready" });
     } catch (error) {
@@ -1160,12 +1393,15 @@ function GapColumn({ variantKey, isChallenger, template, settings, workHistory, 
     runIdRef.current = newMetricId();
     try {
       let details;
-      if (isChallenger) {
+      const useProduction = !isChallenger || isProductionLabPrompt("gap", template);
+      if (!useProduction) {
         const prompt = renderPromptTemplate(template, {
           workHistory: formatWorkHistoryForPrompt(workHistory),
+          workHistoryJson: JSON.stringify(workHistory, null, 2),
           jobDescription,
+          maxItems: String(MAX_MISSING_EXPERIENCE_ITEMS),
         });
-        const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current });
+        const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
         const adapted = adaptChallengerQuestions(parsed);
         const audit = auditQuestionRound(adapted, 1);
         log({
@@ -1181,7 +1417,7 @@ function GapColumn({ variantKey, isChallenger, template, settings, workHistory, 
         }));
       } else {
         const prompt = buildMissingExperienceReviewPrompt({ workHistory, jobDescription });
-        const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current });
+        const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
         const audit = auditGapReview(parsed, workHistory);
         log({
           label: "Find gap questions",
@@ -1222,7 +1458,9 @@ function GapColumn({ variantKey, isChallenger, template, settings, workHistory, 
       title={isChallenger ? "Challenger" : "Production"}
       note={
         isChallenger
-          ? "Questions from the challenger prompt; answers are written up with the production prompt."
+          ? isProductionLabPrompt("gap", template)
+            ? "Using the shipped production gap prompt in column B."
+            : "Questions from the challenger prompt; answers are written up with the production prompt."
           : "The exact flow shipped on the Generate tab."
       }
     >
@@ -1259,13 +1497,19 @@ function GapColumn({ variantKey, isChallenger, template, settings, workHistory, 
   );
 }
 
-function GapLab({ workHistory, settings }) {
+function GapLab({ workHistory, settings, promptLibrary, getSupabase }) {
   const [jobDescription, setJobDescription] = useState("");
-  const [template, setTemplate] = useState(CHALLENGER_SEEDS.gap);
+  const challenger = useChallengerTemplate("gap", { initialPrompts: promptLibrary, getSupabase });
   const [runSignal, setRunSignal] = useState(null);
 
   const disabled = !jobDescription.trim();
-  const columnProps = { template, settings, workHistory, jobDescription, runSignal };
+  const columnProps = {
+    template: challenger.template,
+    settings,
+    workHistory,
+    jobDescription,
+    runSignal,
+  };
 
   return (
     <div>
@@ -1283,9 +1527,22 @@ function GapLab({ workHistory, settings }) {
       <ProductionPromptPreview
         build={() => buildMissingExperienceReviewPrompt({ workHistory, jobDescription })}
       />
-      <ChallengerEditor feature="gap" value={template} onChange={setTemplate} />
+      <ChallengerEditor
+        feature="gap"
+        value={challenger.template}
+        onChange={challenger.setTemplate}
+        library={challenger.library}
+        adoptedId={challenger.adoptedId}
+        onAdopt={challenger.adopt}
+        onLoad={challenger.loadEntry}
+        status={challenger.status}
+        saving={challenger.saving}
+      />
       <RunButtons
-        onRun={(target) => setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }))}
+        onRun={(target) => {
+          if (target === "B" || target === "both") challenger.rememberTested();
+          setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }));
+        }}
         disabled={disabled}
         disabledReason="Paste a job description first."
       />
@@ -1318,25 +1575,32 @@ function GenerateColumn({
     const nonce = ++nonceRef.current;
     reset();
     const runId = newMetricId();
-    setState({ status: "loading", stepIndex: isChallenger ? -1 : 0, failed: false, markdown: "", error: "" });
+    const useProductionPipeline = !isChallenger || isProductionLabPrompt("generate", template);
+    setState({
+      status: "loading",
+      stepIndex: useProductionPipeline ? 0 : -1,
+      failed: false,
+      markdown: "",
+      error: "",
+    });
     const stillCurrent = () => nonce === nonceRef.current;
 
     try {
       let text;
-      if (isChallenger) {
+      if (!useProductionPipeline) {
         const prompt = renderPromptTemplate(template, {
           profile: formatProfileForPrompt(profile),
           workHistory: formatWorkHistoryForPrompt(workHistory),
           jobDescription,
         });
-        text = await callLlm(settings, prompt, null, { runId });
+        text = await callLlm(settings, prompt, null, { runId, feature: "lab" });
         if (!stillCurrent()) return;
         log({ label: "Compose the resume (single call)", prompt, response: text });
       } else {
         // The exact three-step production pipeline from src/App.jsx, minus the
         // parts that save resumes and record product metrics.
         const analysisPrompt = buildJobAnalysisPrompt(jobDescription);
-        const analysisRaw = await callLlmForJson(settings, analysisPrompt, null, { runId });
+        const analysisRaw = await callLlmForJson(settings, analysisPrompt, null, { runId, feature: "lab" });
         if (!stillCurrent()) return;
         log({ label: "1 · Analyze the job", prompt: analysisPrompt, response: analysisRaw });
         const jobAnalysis = validateJobAnalysis(analysisRaw);
@@ -1350,7 +1614,7 @@ function GenerateColumn({
           instructions: jobDescription,
           coverage,
         });
-        const evidenceRaw = await callLlmForJson(settings, evidencePrompt, null, { runId });
+        const evidenceRaw = await callLlmForJson(settings, evidencePrompt, null, { runId, feature: "lab" });
         if (!stillCurrent()) return;
         log({ label: "2 · Select and rank evidence", prompt: evidencePrompt, response: evidenceRaw });
         const selectedEvidence = ensureRequiredRolesSelected(
@@ -1367,7 +1631,7 @@ function GenerateColumn({
           instructions: jobDescription,
           coverage,
         });
-        text = await callLlm(settings, composePrompt, null, { runId });
+        text = await callLlm(settings, composePrompt, null, { runId, feature: "lab" });
         if (!stillCurrent()) return;
         log({ label: "3 · Compose the resume", prompt: composePrompt, response: text });
       }
@@ -1389,13 +1653,17 @@ function GenerateColumn({
   };
   useRunSignal(runSignal, variantKey, start);
 
+  const showingProductionPipeline = !isChallenger || isProductionLabPrompt("generate", template);
+
   return (
     <VariantColumn
       badge={variantKey}
       title={isChallenger ? "Challenger" : "Production"}
       note={
         isChallenger
-          ? "One model call straight from the challenger prompt."
+          ? showingProductionPipeline
+            ? "Using the shipped three-step production pipeline in column B."
+            : "One model call straight from the challenger prompt."
           : "The three-step pipeline shipped on the Generate tab."
       }
       action={
@@ -1423,10 +1691,10 @@ function GenerateColumn({
       {state.status === "idle" ? (
         <p className="mt-3 text-sm text-neutral-500">Not running. Use the Run buttons above.</p>
       ) : null}
-      {!isChallenger && state.stepIndex >= 0 ? (
+      {showingProductionPipeline && state.stepIndex >= 0 ? (
         <PipelineSteps steps={GENERATE_STEPS} stepIndex={state.stepIndex} failed={state.failed} />
       ) : null}
-      {isChallenger && state.status === "loading" ? (
+      {!showingProductionPipeline && state.status === "loading" ? (
         <p className="mt-3 animate-pulse text-sm text-neutral-400">Writing the resume…</p>
       ) : null}
       {state.status === "error" ? <p className="mt-3 text-sm text-red-400">{state.error}</p> : null}
@@ -1444,12 +1712,19 @@ function GenerateColumn({
   );
 }
 
-function GenerateLab({ profile, workHistory, settings }) {
+function GenerateLab({ profile, workHistory, settings, promptLibrary, getSupabase }) {
   const [jobDescription, setJobDescription] = useState("");
-  const [template, setTemplate] = useState(CHALLENGER_SEEDS.generate);
+  const challenger = useChallengerTemplate("generate", { initialPrompts: promptLibrary, getSupabase });
   const [runSignal, setRunSignal] = useState(null);
 
-  const columnProps = { template, settings, profile, workHistory, jobDescription, runSignal };
+  const columnProps = {
+    template: challenger.template,
+    settings,
+    profile,
+    workHistory,
+    jobDescription,
+    runSignal,
+  };
 
   return (
     <div>
@@ -1471,9 +1746,22 @@ function GenerateLab({ profile, workHistory, settings }) {
         label="View production step 1 prompt (steps 2–3 depend on step 1's output — see the call log after a run)"
         build={() => buildJobAnalysisPrompt(jobDescription)}
       />
-      <ChallengerEditor feature="generate" value={template} onChange={setTemplate} />
+      <ChallengerEditor
+        feature="generate"
+        value={challenger.template}
+        onChange={challenger.setTemplate}
+        library={challenger.library}
+        adoptedId={challenger.adoptedId}
+        onAdopt={challenger.adopt}
+        onLoad={challenger.loadEntry}
+        status={challenger.status}
+        saving={challenger.saving}
+      />
       <RunButtons
-        onRun={(target) => setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }))}
+        onRun={(target) => {
+          if (target === "B" || target === "both") challenger.rememberTested();
+          setRunSignal((current) => ({ n: (current?.n ?? 0) + 1, target }));
+        }}
         disabled={false}
       />
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -1489,18 +1777,19 @@ function GenerateLab({ profile, workHistory, settings }) {
 export default function PromptLab({ initialData = null }) {
   const profile = useMemo(() => normalizeProfile(initialData?.profile), [initialData]);
   const [workHistory, setWorkHistory] = useState(() =>
-    (initialData?.workHistory ?? []).map(normalizeWorkHistoryItem)
+    sortWorkHistory((initialData?.workHistory ?? []).map(normalizeWorkHistoryItem))
   );
+  const promptLibrary = initialData?.promptLibrary ?? [];
   const llm = useLabLlmSettings();
   const [activeFeature, setActiveFeature] = useState("clarity");
   const [saveToast, setSaveToast] = useState("");
   const saveToastTimeoutRef = useRef(null);
   const supabaseRef = useRef(null);
 
-  const getSupabase = () => {
+  const getSupabase = useCallback(() => {
     if (!supabaseRef.current) supabaseRef.current = createClient();
     return supabaseRef.current;
-  };
+  }, []);
 
   const showSaveToast = useCallback((message) => {
     setSaveToast(message);
@@ -1555,10 +1844,11 @@ export default function PromptLab({ initialData = null }) {
             <h1 className="text-xl font-bold text-neutral-100">Prompt lab</h1>
             <p className="mt-1 max-w-xl text-sm text-neutral-500">
               A/B bench for the four smart flows, run against your real saved history with the
-              real product components and validators. Calls bill like normal usage. Accept and Add
-              to description save back to your work history; generated resumes stay display-only,
-              and product metrics are not recorded. This page is unlinked — it exists only at
-              /app/lab.
+              real product components and validators. Edit a challenger, Run B to test it, then Use
+              this prompt to save it. Every prompt body lives in the prompts table. Calls bill
+              like normal usage. Accept and Add to description save back to your work history;
+              generated resumes stay display-only, and product metrics are not recorded. This
+              page is unlinked — it exists only at /app/lab.
             </p>
           </div>
           <ModelPicker
@@ -1600,6 +1890,8 @@ export default function PromptLab({ initialData = null }) {
               workHistory={workHistory}
               settings={llm.settings}
               onSaveDescription={handleSaveDescription}
+              promptLibrary={promptLibrary}
+              getSupabase={getSupabase}
             />
           </section>
           <section className={activeFeature === "expand" ? "" : "hidden"}>
@@ -1607,13 +1899,26 @@ export default function PromptLab({ initialData = null }) {
               workHistory={workHistory}
               settings={llm.settings}
               onSaveDescription={handleSaveDescription}
+              promptLibrary={promptLibrary}
+              getSupabase={getSupabase}
             />
           </section>
           <section className={activeFeature === "gap" ? "" : "hidden"}>
-            <GapLab workHistory={workHistory} settings={llm.settings} />
+            <GapLab
+              workHistory={workHistory}
+              settings={llm.settings}
+              promptLibrary={promptLibrary}
+              getSupabase={getSupabase}
+            />
           </section>
           <section className={activeFeature === "generate" ? "" : "hidden"}>
-            <GenerateLab profile={profile} workHistory={workHistory} settings={llm.settings} />
+            <GenerateLab
+              profile={profile}
+              workHistory={workHistory}
+              settings={llm.settings}
+              promptLibrary={promptLibrary}
+              getSupabase={getSupabase}
+            />
           </section>
         </div>
       </div>

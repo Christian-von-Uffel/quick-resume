@@ -4,6 +4,7 @@ import {
   normalizeDetailForComparison,
 } from "./resumeModel";
 import { cleanFormattedDetail } from "./reviewExperience";
+import { renderPromptTemplate } from "./promptTemplate";
 
 // The "Expand experience" flow for a single sparse position. Instead of guessing
 // what job POSTINGS for the title demand (which produced abstract "responsibility
@@ -46,31 +47,20 @@ function formatTranscript(transcript, emptyLabel) {
   return lines || emptyLabel;
 }
 
-// Ask the model for the FIRST 2-3 dead-simple questions: a role-specific "what do
-// you spend most of your time on?" plus two universal, verbatim-pinned questions
-// (company size and IC-vs-manager) that ground every entry. High-value problems
-// and who they collaborate with are opened here and dug into by the follow-ups.
-export function buildOpeningQuestionsPrompt({ position, company, description, tenure }) {
-  const roleContext = position?.trim() ? position.trim() : "this role";
-  const companyContext = company?.trim() ?? "";
-  const tenureBlock = tenure?.trim()
-    ? `
-
-<tenure>
-About ${tenure.trim()} in the role.
-</tenure>`
-    : "";
-
-  return `<task>
-Ask short, direct questions to find out what someone actually does in their job as "${roleContext}"${companyContext ? ` at ${companyContext}` : ""}. We want to understand more about what they do in their role. Ask the FIRST 2 or 3 questions. You only ask questions with tappable answer options.
+// Shipped opening-questions prompt as a lab-loadable template. `$companyClause`
+// is either ` at Acme` or empty; `$tenureBlock` is the optional <tenure> block
+// (including leading newlines) or empty — same shape buildOpeningQuestionsPrompt
+// always produced.
+export const EXPANSION_OPENING_PROMPT_TEMPLATE = `<task>
+Ask short, direct questions to find out what someone actually does in their job as "$jobTitle"$companyClause. We want to understand more about what they do in their role. Ask the FIRST 2 or 3 questions. You only ask questions with tappable answer options.
 </task>
 
 <role_title>
-${roleContext}
-</role_title>${tenureBlock}
+$jobTitle
+</role_title>$tenureBlock
 
 <current_description>
-${description?.trim() ? description.trim() : "(they haven't written anything yet)"}
+$experienceDetails
 </current_description>
 
 <what_to_find_out>
@@ -139,6 +129,23 @@ Return only valid JSON matching the schema below. Do not wrap it in markdown fen
   ]
 }
 </schema>`;
+
+// Ask the model for the FIRST 2-3 dead-simple questions: a role-specific "what do
+// you spend most of your time on?" plus two universal, verbatim-pinned questions
+// (company size and IC-vs-manager) that ground every entry. High-value problems
+// and who they collaborate with are opened here and dug into by the follow-ups.
+export function buildOpeningQuestionsPrompt({ position, company, description, tenure }) {
+  const roleContext = position?.trim() ? position.trim() : "this role";
+  const companyContext = company?.trim() ?? "";
+  const tenureTrimmed = tenure?.trim() ?? "";
+  return renderPromptTemplate(EXPANSION_OPENING_PROMPT_TEMPLATE, {
+    jobTitle: roleContext,
+    companyClause: companyContext ? ` at ${companyContext}` : "",
+    tenureBlock: tenureTrimmed
+      ? `\n\n<tenure>\nAbout ${tenureTrimmed} in the role.\n</tenure>`
+      : "",
+    experienceDetails: description?.trim() ? description.trim() : "(they haven't written anything yet)",
+  });
 }
 
 // Given the transcript of what the person has answered so far, ask the next 1-3

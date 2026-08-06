@@ -5,7 +5,8 @@ import {
   hasActiveAccess,
   subscriptionRequiredResponse,
 } from "../../../src/lib/server/subscription";
-import { recordLlmCall } from "../../../src/lib/server/llmCalls";
+import { recordLlmCall, normalizeRunId } from "../../../src/lib/server/llmCalls";
+import { checkUsageAllowed, usageLimitResponse } from "../../../src/lib/server/quota";
 
 // OCR on a long document can take a while; match the generation route's ceiling.
 export const maxDuration = 180;
@@ -13,7 +14,8 @@ export const maxDuration = 180;
 export async function POST(request) {
   const user = await getRequestUser();
   if (!user) return unauthorizedResponse();
-  if (!hasActiveAccess(await getSubscriptionForUser(user.id))) {
+  const subscription = await getSubscriptionForUser(user.id);
+  if (!hasActiveAccess(subscription)) {
     return subscriptionRequiredResponse();
   }
 
@@ -37,7 +39,18 @@ export async function POST(request) {
 
   // OCR is a leg of the import run, not a run of its own: it shares the run id
   // so both legs roll up as one import. No prompt is involved.
-  const runId = body?.runId ?? null;
+  const runId = normalizeRunId(body?.runId);
+
+  // Counted as the import it belongs to. Sharing the run id with the extraction
+  // leg means an import costs one unit of allowance, not two.
+  const decision = await checkUsageAllowed({
+    userId: user.id,
+    subscription,
+    feature: "resume_import",
+    runId,
+  });
+  if (!decision.allowed) return usageLimitResponse(decision);
+
   const startedAt = Date.now();
 
   try {
@@ -51,6 +64,7 @@ export async function POST(request) {
     recordLlmCall({
       userId: user.id,
       runId,
+      feature: "resume_import",
       provider: "mistral",
       model: "ocr",
       pages: pagesProcessed,
@@ -63,6 +77,7 @@ export async function POST(request) {
     recordLlmCall({
       userId: user.id,
       runId,
+      feature: "resume_import",
       provider: "mistral",
       model: "ocr",
       durationMs: Date.now() - startedAt,

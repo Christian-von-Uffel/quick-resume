@@ -1,4 +1,5 @@
 import { normalizeStoredList } from "./resumeModel";
+import { renderPromptTemplate } from "./promptTemplate";
 
 // The "address missing experience" flow on the Generate Resume tab. Unlike the
 // clarity review (fix what's written) or the enrichment flow (expand one thin
@@ -47,8 +48,10 @@ const MISSING_EXPERIENCE_KIND_SET = new Set(MISSING_EXPERIENCE_KINDS);
 
 export const MAX_MISSING_EXPERIENCE_ITEMS = 12;
 
-export function buildMissingExperienceReviewPrompt({ workHistory, jobDescription }) {
-  return `<task>
+// Shipped gap-review prompt as a lab-loadable template. `$workHistoryJson` is
+// the same JSON.stringify(workHistory, null, 2) production sends; `$maxItems`
+// is the cap stringified so the template stays a pure string.
+export const GAP_REVIEW_PROMPT_TEMPLATE = `<task>
 You are helping a candidate address experience this specific job posting asks for that their stored work history does not clearly show yet.
 1. Read the ENTIRE job description — summary, responsibilities, qualifications, technical lists — and collect what it asks for across every kind below, not just tools.
 2. Cross-reference against the candidate's work history. Skip anything the history already demonstrates.
@@ -68,11 +71,11 @@ You are helping a candidate address experience this specific job posting asks fo
 </kinds_of_experience>
 
 <work_history>
-${JSON.stringify(workHistory, null, 2)}
+$workHistoryJson
 </work_history>
 
 <job_description>
-${jobDescription}
+$jobDescription
 </job_description>
 
 <instructions>
@@ -85,7 +88,7 @@ ${jobDescription}
 - Keep "plainspokenDetail" simple, factual, and reusable as a work-history bullet if the person confirms without elaborating (e.g. "Presented analytical findings to senior leadership.").
 - Write "answerPlaceholder" as a short first-person example answer starting with "Yes, I", hinting at the specifics worth including (what they did and, when natural, what came of it). Keep it realistic and plainspoken.
 - Avoid vague catch-all questions: never use "various", "overall", "general", "such as", "including", "etc", or the words "duties", "tasks", "functions", "responsibilities" inside a question — ask about one concrete activity instead.
-- Limit to the ${MAX_MISSING_EXPERIENCE_ITEMS} most useful gaps, ordered by how much addressing them would strengthen this application. Aim for at least 6 when the posting supports them.
+- Limit to the $maxItems most useful gaps, ordered by how much addressing them would strengthen this application. Aim for at least 6 when the posting supports them.
 - Return only valid JSON matching the schema below. Do not wrap it in markdown fences or add comments.
 </instructions>
 
@@ -110,6 +113,13 @@ ${jobDescription}
   ]
 }
 </schema>`;
+
+export function buildMissingExperienceReviewPrompt({ workHistory, jobDescription }) {
+  return renderPromptTemplate(GAP_REVIEW_PROMPT_TEMPLATE, {
+    workHistoryJson: JSON.stringify(workHistory, null, 2),
+    jobDescription: jobDescription ?? "",
+    maxItems: String(MAX_MISSING_EXPERIENCE_ITEMS),
+  });
 }
 
 // Hard rejects for questions that bundle topics or hide behind category words —

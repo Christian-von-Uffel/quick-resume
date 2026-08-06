@@ -18,6 +18,7 @@ import {
   recallIntent,
   rememberIntent,
 } from "../lib/authIntent";
+import { readGclid, reportConversion } from "../lib/ads";
 
 // Both halves of auth are the same primitive: type an email, get a one-time
 // link, click it, you're in. The only difference is whether an unknown address
@@ -167,7 +168,7 @@ export default function MagicLinkAuth({ mode, query = "" }) {
           // hop — including opening the link on a phone. Supabase only applies
           // it when the account is created, which is exactly the case that
           // needs it.
-          data: intentToUserMetadata(intent),
+          data: intentToUserMetadata(intent, { gclid: readGclid() }),
           // Deliberately no emailRedirectTo: the email template builds our own
           // /login?token_hash=... link, so there is no redirect allowlist to
           // keep in sync with deploy previews.
@@ -184,6 +185,16 @@ export default function MagicLinkAuth({ mode, query = "" }) {
       }
 
       rememberIntent(intent);
+
+      // The campaign's bidding signal. This is the last moment that is still
+      // the same browser session as the ad click, so it is the only signup
+      // milestone Google can attribute reliably — everything after it happens
+      // on the far side of an inbox. Signup only: a returning user signing in
+      // is not an acquisition. Deduped so the resend button can't inflate it.
+      if (mode === "signup") {
+        reportConversion("signup_requested", { once: "signup_requested" });
+      }
+
       sentTo.current = address;
       setCooldown(RESEND_AFTER_SECONDS);
       setBusy(false);

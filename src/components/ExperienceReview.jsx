@@ -5,7 +5,6 @@ import {
   CLARITY_REWRITE_STEPS,
   validateClarityReview,
 } from "../lib/clarifyExperience";
-import { PROMPTS } from "../lib/prompts";
 import {
   newMetricId,
   startClarityReview,
@@ -71,7 +70,15 @@ export function ExperienceReview({
     (async () => {
       try {
         // Step 1: one LLM call flags the hardest-to-read sentences.
-        const parsed = await reviewSentences({ position, description, runId: reviewIdRef.current });
+        let reviewPromptId = null;
+        const parsed = await reviewSentences({
+          position,
+          description,
+          runId: reviewIdRef.current,
+          onPromptId: (id) => {
+            reviewPromptId = id;
+          },
+        });
         if (cancelledRef.current) return;
 
         // Step 2: paint the prepare stage before validating. Without flushSync,
@@ -91,11 +98,16 @@ export function ExperienceReview({
 
         // Recorded after validation and after the no-options drop, so
         // "presented" counts the questions the person could actually answer.
-        startClarityReview({ id: reviewIdRef.current, position, company });
+        startClarityReview({
+          id: reviewIdRef.current,
+          position,
+          company,
+          promptId: reviewPromptId,
+        });
         const questionIds = recordQuestionsPresented(
           { clarityReviewId: reviewIdRef.current },
           found.map((item) => ({
-            promptKey: PROMPTS.CLARITY_REVIEW,
+            promptId: reviewPromptId,
             question: item.question,
             options: item.options,
           }))
@@ -175,12 +187,16 @@ export function ExperienceReview({
     });
 
     try {
+      let rewritePromptId = null;
       const proposal = await proposeRewrite({
         position,
         sentence: item.sentence,
         clarification: trimmed,
         skills: item.skillsNone ? [] : item.selectedSkills,
         runId: reviewIdRef.current,
+        onPromptId: (id) => {
+          rewritePromptId = id;
+        },
       });
       if (cancelledRef.current) return;
       if (!proposal) {
@@ -194,7 +210,7 @@ export function ExperienceReview({
       // shown and really wasn't accepted.
       const suggestionId = recordSuggestionPresented(
         { clarityReviewId: reviewIdRef.current },
-        { suggestion: proposal, promptKey: PROMPTS.CLARITY_REWRITE, questionId: item.questionId }
+        { suggestion: proposal, promptId: rewritePromptId, questionId: item.questionId }
       );
       updateItem(item.id, { proposal, proposalStatus: "ready", suggestionId });
     } catch (err) {

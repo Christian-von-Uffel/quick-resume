@@ -1,3 +1,4 @@
+import GoogleAdsTag from "../../src/components/GoogleAdsTag";
 import "../../src/index.css";
 
 export const metadata = {
@@ -49,6 +50,14 @@ export default function ProductLayout({ children }) {
       <body className="bg-neutral-900">
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         {children}
+        {/*
+          Also rendered by app/(marketing)/layout.jsx. The two route groups each
+          render their own <html>, so there is no single place to put this —
+          both need it, or the tag is missing on whichever half was forgotten.
+          /signup and /app both live under this layout, and both fire
+          conversions.
+        */}
+        <GoogleAdsTag />
       </body>
     </html>
   );

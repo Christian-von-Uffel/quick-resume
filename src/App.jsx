@@ -45,7 +45,6 @@ import {
 } from "./lib/resumeModel";
 import { createClient } from "./lib/supabase/client";
 import { syncAppStateToDb, deleteUserData } from "./lib/syncProfile";
-import { PROMPTS } from "./lib/prompts";
 import {
   configureMetrics,
   newMetricId,
@@ -73,6 +72,7 @@ import {
   callLlmForJson,
   callMistralOcr,
   scrapeJobPage,
+  UsageLimitError,
 } from "./lib/llm";
 import { parseMarkdown, measureBlocks, layoutBlocks, findOptimalFit } from "./lib/markdownLayout";
 import {
@@ -164,6 +164,7 @@ export default function App({ initialData = null, userId = null }) {
   const [workHistorySaveToast, setWorkHistorySaveToast] = useState("");
   const [workHistorySearch, setWorkHistorySearch] = useState("");
   const [highlightedWorkId, setHighlightedWorkId] = useState(null);
+  const [pendingFocusWorkId, setPendingFocusWorkId] = useState(null);
   // Which position's inline clarity review is open (null = none).
   const [reviewingWorkId, setReviewingWorkId] = useState(null);
   // Which position's inline "Expand experience" enrichment panel is open (null = none).
@@ -185,6 +186,10 @@ export default function App({ initialData = null, userId = null }) {
   // Whether generateStatus holds a failure (styled as an error) rather than
   // progress, so a failed run can't be mistaken for one that's still working.
   const [generateFailed, setGenerateFailed] = useState(false);
+  // Set when a generation was refused because the trial's resume allowance is
+  // spent — the one stop that comes with a checkout button instead of a retry.
+  const [generateLimitUpgrade, setGenerateLimitUpgrade] = useState(false);
+  const [openingCheckout, setOpeningCheckout] = useState(false);
   // Index into GENERATE_STEPS while a generation runs (-1 = idle). Kept on
   // failure so the step list can show WHERE the run died.
   const [generateStepIndex, setGenerateStepIndex] = useState(-1);
@@ -823,7 +828,11 @@ export default function App({ initialData = null, userId = null }) {
   };
 
   const handleAddWorkHistory = () => {
-    setWorkHistory((current) => [...current, createWorkHistoryItem()]);
+    const item = createWorkHistoryItem();
+    setWorkHistory((current) => [...current, item]);
+    setWorkHistorySearch("");
+    setHighlightedWorkId(item.id);
+    setPendingFocusWorkId(item.id);
   };
 
   // Jump from the timeline popup to a specific position's edit card. Clears any
@@ -842,6 +851,7 @@ export default function App({ initialData = null, userId = null }) {
     setActiveMainTab("workHistory");
     setWorkHistorySearch("");
     setHighlightedWorkId(item.id);
+    setPendingFocusWorkId(item.id);
   }, []);
 
   useEffect(() => {
@@ -851,6 +861,17 @@ export default function App({ initialData = null, userId = null }) {
     const timeout = setTimeout(() => setHighlightedWorkId(null), 1800);
     return () => clearTimeout(timeout);
   }, [highlightedWorkId]);
+
+  // Put the cursor in a just-added position's title field so the user can
+  // start typing immediately. Runs after the new card is in the DOM; the
+  // highlight effect above handles scrolling it into view.
+  useEffect(() => {
+    if (!pendingFocusWorkId) return;
+    document
+      .getElementById(`work-position-${pendingFocusWorkId}`)
+      ?.focus({ preventScroll: true });
+    setPendingFocusWorkId(null);
+  }, [pendingFocusWorkId]);
 
   const handleToggleWorkPresent = (workId, isPresent) => {
     setWorkHistory((current) =>
@@ -989,12 +1010,12 @@ export default function App({ initialData = null, userId = null }) {
   // Validation (and the step indicator for it) lives in ExperienceReview so the
   // prepare stage can advance after this call returns.
   const handleReviewSentences = useCallback(
-    async ({ position, description, runId }) => {
+    async ({ position, description, runId, onPromptId }) => {
       return callLlmForJson(
         llmSettings,
         buildClarityReviewPrompt({ position, description }),
         null,
-        { promptKey: PROMPTS.CLARITY_REVIEW, runId }
+        { runId, onPromptId, feature: "clarity_review" }
       );
     },
     [llmSettings]
@@ -1003,12 +1024,12 @@ export default function App({ initialData = null, userId = null }) {
   // Turn a flagged sentence plus the person's clarification (and any confirmed
   // skills, tools, or collaborators) into a clearer rewrite.
   const handleProposeSentenceRewrite = useCallback(
-    async ({ position, sentence, clarification, skills, runId }) => {
+    async ({ position, sentence, clarification, skills, runId, onPromptId }) => {
       const text = await callLlm(
         llmSettings,
         buildClaritySuggestionPrompt({ position, sentence, clarification, skills }),
         null,
-        { promptKey: PROMPTS.CLARITY_REWRITE, runId }
+        { runId, onPromptId, feature: "clarity_review" }
       );
       return cleanSuggestedSentence(text);
     },
@@ -1043,12 +1064,12 @@ export default function App({ initialData = null, userId = null }) {
   // Ask the model for the first few dead-simple questions about what this person
   // actually does day to day. Grounded in the role, not job-posting boilerplate.
   const handleLoadOpeningQuestions = useCallback(
-    async ({ position, company, description, tenureLabel, runId }) => {
+    async ({ position, company, description, tenureLabel, runId, onPromptId }) => {
       const parsed = await callLlmForJson(
         llmSettings,
         buildOpeningQuestionsPrompt({ position, company, description, tenure: tenureLabel }),
         null,
-        { promptKey: PROMPTS.EXPANSION_OPENING, runId }
+        { runId, onPromptId, feature: "experience_expansion" }
       );
       return validateOpeningQuestions(parsed);
     },
@@ -1058,7 +1079,7 @@ export default function App({ initialData = null, userId = null }) {
   // Ask the next questions that branch off what the person has answered so far,
   // or get back an "enough" signal that we know enough to write it up.
   const handleLoadFollowupQuestions = useCallback(
-    async ({ position, company, description, tenureLabel, transcript, round, runId }) => {
+    async ({ position, company, description, tenureLabel, transcript, round, runId, onPromptId }) => {
       const parsed = await callLlmForJson(
         llmSettings,
         buildFollowupQuestionsPrompt({
@@ -1071,7 +1092,7 @@ export default function App({ initialData = null, userId = null }) {
           maxRounds: MAX_QA_ROUNDS,
         }),
         null,
-        { promptKey: PROMPTS.EXPANSION_FOLLOWUP, runId }
+        { runId, onPromptId, feature: "experience_expansion" }
       );
       return validateFollowupQuestions(parsed, { round });
     },
@@ -1080,12 +1101,12 @@ export default function App({ initialData = null, userId = null }) {
 
   // Turn the whole Q&A transcript into 1-3 plainspoken resume bullets.
   const handleComposeEnrichedBullets = useCallback(
-    async ({ position, company, description, tenureLabel, transcript, runId }) => {
+    async ({ position, company, description, tenureLabel, transcript, runId, onPromptId }) => {
       const parsed = await callLlmForJson(
         llmSettings,
         buildComposePrompt({ position, company, description, tenure: tenureLabel, transcript }),
         null,
-        { promptKey: PROMPTS.EXPANSION_COMPOSE, runId }
+        { runId, onPromptId, feature: "experience_expansion" }
       );
       return validateComposedBullets(parsed);
     },
@@ -1188,8 +1209,8 @@ export default function App({ initialData = null, userId = null }) {
       });
 
       const cleanedLlmResponse = await callLlm(cleanLlmSettings, cleanPrompt, null, {
-        promptKey: PROMPTS.JOB_DESCRIPTION_CLEAN,
         runId: scrapeRunId,
+        feature: "job_scrape",
       });
       const cleanedText = extractCleanedJobDescription(cleanedLlmResponse);
 
@@ -1232,11 +1253,18 @@ export default function App({ initialData = null, userId = null }) {
     try {
       // Step 1: one LLM call reads the whole posting and compares it against
       // the stored work history, returning gap questions.
+      let gapPromptId = null;
       const parsed = await callLlmForJson(
         llmSettings,
         buildMissingExperienceReviewPrompt({ workHistory, jobDescription }),
         null,
-        { promptKey: PROMPTS.GAP_REVIEW, runId: gapAnalysisId }
+        {
+          runId: gapAnalysisId,
+          feature: "job_gap_review",
+          onPromptId: (id) => {
+            gapPromptId = id;
+          },
+        }
       );
 
       // Step 2: validate the questions and connect each to the stored roles it names.
@@ -1246,11 +1274,11 @@ export default function App({ initialData = null, userId = null }) {
 
       // Recorded post-validation: the count is the gaps actually put in front
       // of the person. Each gap is a question they confirm or dismiss.
-      startJobGapAnalysis({ id: gapAnalysisId, gapsFound: details.length });
+      startJobGapAnalysis({ id: gapAnalysisId, gapsFound: details.length, promptId: gapPromptId });
       const questionIds = recordQuestionsPresented(
         { jobGapAnalysisId: gapAnalysisId },
         details.map((detail) => ({
-          promptKey: PROMPTS.GAP_REVIEW,
+          promptId: gapPromptId,
           question: detail.question,
         }))
       );
@@ -1437,7 +1465,7 @@ export default function App({ initialData = null, userId = null }) {
             llmSettings,
             formatExperienceElaboration({ question: task.detail.question, answer: task.answer }),
             null,
-            { promptKey: PROMPTS.GAP_ELABORATION, runId: gapAnalysisIdRef.current }
+            { runId: gapAnalysisIdRef.current, feature: "job_gap_review" }
           );
           return { workId: task.workId, line: cleanFormattedDetail(text) || fallback };
         })
@@ -1567,7 +1595,7 @@ export default function App({ initialData = null, userId = null }) {
         llmSettings,
         importResume(ocrText),
         ocrText ? null : importFile,
-        { promptKey: PROMPTS.IMPORT_EXTRACT, runId: importId }
+        { runId: importId, feature: "resume_import" }
       );
       const importedProfile = coerceImportedProfile(imported.profile);
       const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
@@ -1617,10 +1645,26 @@ export default function App({ initialData = null, userId = null }) {
     }
   };
 
+  // Same checkout hand-off the trial gate uses, reached from inside the editor
+  // by someone who just ran out of trial resumes.
+  const handleSubscribeFromLimit = async () => {
+    setOpeningCheckout(true);
+    try {
+      const response = await fetch("/api/stripe/checkout", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok || !data.url) throw new Error(data.error || "Could not start checkout.");
+      window.location.assign(data.url);
+    } catch (error) {
+      setGenerateStatus(error instanceof Error ? error.message : "Could not start checkout.");
+      setOpeningCheckout(false);
+    }
+  };
+
   const handleGenerateMarkdown = async () => {
     setIsGenerating(true);
     setGenerateFailed(false);
     setGenerateStatus("");
+    setGenerateLimitUpgrade(false);
     setGenerateStepIndex(0);
 
     // One generation is three model calls; they all record their cost against
@@ -1631,10 +1675,14 @@ export default function App({ initialData = null, userId = null }) {
       // Step 1: read the job description once — the company/position for the
       // saved resume's title plus the key responsibilities and requirements
       // that the later steps rank bullets against and frame the summary with.
+      let generationPromptId = null;
       const jobAnalysis = validateJobAnalysis(
         await callLlmForJson(llmSettings, buildJobAnalysisPrompt(generationInstructions), null, {
-          promptKey: PROMPTS.GENERATION_ANALYSIS,
           runId: generationId,
+          feature: "resume_generation",
+          onPromptId: (id) => {
+            if (!generationPromptId) generationPromptId = id;
+          },
         })
       );
       const resumeTitle = titleGeneratedResume(jobAnalysis.company, jobAnalysis.position);
@@ -1650,7 +1698,7 @@ export default function App({ initialData = null, userId = null }) {
         llmSettings,
         selectRankedEvidence({ profile, workHistory, jobAnalysis, instructions: generationInstructions, coverage }),
         null,
-        { promptKey: PROMPTS.GENERATION_EVIDENCE, runId: generationId }
+        { runId: generationId, feature: "resume_generation" }
       );
       const selectedEvidence = ensureRequiredRolesSelected(
         validateSelectedResumeEvidence(selectionJson, profile),
@@ -1670,7 +1718,7 @@ export default function App({ initialData = null, userId = null }) {
           coverage,
         }),
         null,
-        { promptKey: PROMPTS.GENERATION_COMPOSE, runId: generationId }
+        { runId: generationId, feature: "resume_generation" }
       );
       const nextMarkdown = text.replace(/^```(?:markdown)?\s*/i, "").replace(/```$/i, "").trim();
       // Save each generation as its own resume so existing resumes are never overwritten.
@@ -1699,12 +1747,19 @@ export default function App({ initialData = null, userId = null }) {
         jobTitle: jobAnalysis.position ?? "",
         company: jobAnalysis.company ?? "",
         succeeded: true,
+        promptId: generationPromptId,
       });
     } catch (error) {
       // Leave generateStepIndex where it was so the step list shows which
       // stage of the pipeline failed.
       setGenerateFailed(true);
       setGenerateStatus(error instanceof Error ? error.message : "Generation failed.");
+      // A spent allowance isn't a broken run: offer checkout, and don't record a
+      // failed generation for a run that never reached a model.
+      if (error instanceof UsageLimitError) {
+        setGenerateLimitUpgrade(Boolean(error.upgrade));
+        if (error.reason === "quota") return;
+      }
       recordResumeGeneration({ id: generationId, succeeded: false });
     } finally {
       setIsGenerating(false);
@@ -2049,6 +2104,7 @@ export default function App({ initialData = null, userId = null }) {
                       </span>
                       <input
                         type="text"
+                        id={`work-position-${item.id}`}
                         value={item.position}
                         onChange={(e) => handleUpdateWorkHistory(item.id, "position", e.target.value)}
                         placeholder="Marketing Manager"
@@ -2684,6 +2740,18 @@ export default function App({ initialData = null, userId = null }) {
                   >
                     {generateStatus}
                   </p>
+                )}
+                {/* Running out of trial resumes is the one "failure" that is
+                    really an offer, so it gets a way to act on it. */}
+                {generateLimitUpgrade && (
+                  <button
+                    type="button"
+                    onClick={handleSubscribeFromLimit}
+                    disabled={openingCheckout}
+                    className="mt-3 rounded-lg border border-neutral-700 bg-neutral-100 px-4 py-2 text-sm font-medium text-neutral-900 transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {openingCheckout ? "Opening checkout..." : "Subscribe to keep generating"}
+                  </button>
                 )}
               </div>
             </div>
