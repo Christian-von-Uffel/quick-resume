@@ -57,7 +57,7 @@ export async function POST(request) {
   try {
     const result = await scrapePageMarkdown(url);
 
-    recordLlmCall({
+    await recordLlmCall({
       userId: user.id,
       runId,
       feature: "job_scrape",
@@ -70,7 +70,7 @@ export async function POST(request) {
 
     return Response.json(result);
   } catch (error) {
-    recordLlmCall({
+    await recordLlmCall({
       userId: user.id,
       runId,
       feature: "job_scrape",

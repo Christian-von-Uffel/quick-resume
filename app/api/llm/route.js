@@ -96,7 +96,9 @@ export async function POST(request) {
 
     return Response.json({ text, promptId });
   } catch (error) {
-    recordLlmCall({
+    // Awaited like the success path: the function may be frozen the moment it
+    // responds, and a failed call still burned tokens and counts toward burst.
+    await recordLlmCall({
       userId: user.id,
       prompt: attributePrompt,
       runId,

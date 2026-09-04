@@ -61,7 +61,7 @@ export async function POST(request) {
     });
 
     // Mistral bills OCR per page, not per token, so `pages` carries the cost.
-    recordLlmCall({
+    await recordLlmCall({
       userId: user.id,
       runId,
       feature: "resume_import",
@@ -74,7 +74,7 @@ export async function POST(request) {
 
     return Response.json({ text });
   } catch (error) {
-    recordLlmCall({
+    await recordLlmCall({
       userId: user.id,
       runId,
       feature: "resume_import",

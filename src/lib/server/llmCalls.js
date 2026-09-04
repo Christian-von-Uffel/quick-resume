@@ -3,7 +3,7 @@
 // This is the unspoofable half. The browser writes its own product metrics
 // (RLS scopes them to the user, and faking your own funnel buys you nothing),
 // but what a call actually cost has to be recorded where the user can't reach
-// it — quotas will be enforced off this table.
+// it — quotas are enforced off this table (see quota.js and usage_snapshot).
 //
 // The prompt body that was sent is find-or-inserted into public.prompts here,
 // and the resulting id is stamped on the llm_calls row.
@@ -36,9 +36,13 @@ export function normalizeRunId(value) {
   return typeof value === "string" && UUID_PATTERN.test(value) ? value : null;
 }
 
-// Fire-and-forget: a metering write must never fail a call the user already
-// paid for, so this swallows its own errors. Resolves the prompts.id first so
-// the HTTP response can hand it back; the llm_calls insert is not awaited.
+// Awaited, never thrown. The row is what quotas are enforced off, so it has to
+// exist before the response goes out: a hosted function is frozen the moment
+// it responds, and an insert fired just before that froze with it — every
+// run's last call went unrecorded while this was fire-and-forget. Metering
+// must still never fail a call the user already paid for, so errors are
+// logged and swallowed; the promise only ever resolves, with the prompts.id
+// so the HTTP response can hand it back.
 export async function recordLlmCall({
   userId,
   prompt = "",
@@ -61,7 +65,7 @@ export async function recordLlmCall({
   }
 
   try {
-    void getSupabaseAdmin()
+    const { error } = await getSupabaseAdmin()
       .from("llm_calls")
       .insert({
         user_id: userId,
@@ -76,10 +80,8 @@ export async function recordLlmCall({
         duration_ms: Math.max(0, Math.round(durationMs)),
         was_repair: wasRepair,
         succeeded,
-      })
-      .then(({ error }) => {
-        if (error) console.warn("[llm_calls] failed to record:", error.message);
       });
+    if (error) console.warn("[llm_calls] failed to record:", error.message);
   } catch (error) {
     console.warn("[llm_calls] failed to record:", error?.message ?? error);
   }
