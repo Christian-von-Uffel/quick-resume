@@ -226,7 +226,7 @@ describe("normalizeLlmSettings", () => {
   it("falls back to defaults for unknown providers and models", () => {
     expect(normalizeLlmSettings({ provider: "aol", model: "clippy-9000" })).toEqual({
       provider: "gemini",
-      model: "gemini-3.5-flash",
+      model: "gemini-3.8-flash",
     });
   });
 });

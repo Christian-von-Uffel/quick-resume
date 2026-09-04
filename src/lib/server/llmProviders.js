@@ -132,7 +132,7 @@ function statusForUpstreamFailure(status) {
 /* ── Provider request layer ────────────────────────────────── */
 // Optional sampling params that some models reject: OpenAI's reasoning models
 // don't accept `temperature`, and Anthropic removed `temperature`/`top_p`/`top_k`
-// on its newer models (Opus 4.8, Fable 5, ...) — sending them there returns a 400.
+// on its newer models (Sonnet 5, Opus 5, Opus 4.8, Fable 5, ...) — sending them there returns a 400.
 const DROPPABLE_MODEL_PARAMS = ["temperature", "top_p", "top_k"];
 
 // Params each provider/model pair has already rejected in this server process.
@@ -541,9 +541,9 @@ async function callAnthropic({ apiKey, model, prompt, file }) {
       // Well under every offered model's output cap (haiku/sonnet 64K, opus/fable
       // 128K) while staying small enough to avoid non-streaming HTTP timeouts.
       max_tokens: 16000,
-      // Rejected with a 400 on newer models (Opus 4.8, Fable 5); postModelJson
+      // Rejected with a 400 on newer models (Sonnet 5, Opus 5, Opus 4.8, Fable 5); postModelJson
       // drops it and retries when that happens, so it's kept for the models
-      // (Sonnet 4.6, Haiku 4.5) that still accept it.
+      // (Sonnet 4.6, Haiku 4.5) that still accept it. Each model pays one probe round trip.
       temperature: 0.2,
       messages: [{ role: "user", content }],
     },
