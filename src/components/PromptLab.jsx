@@ -30,6 +30,7 @@ import {
 } from "../lib/enrichExperience";
 import {
   MAX_MISSING_EXPERIENCE_ITEMS,
+  MAX_COVERED_SKILLS,
   MISSING_EXPERIENCE_KIND_LABELS,
   buildMissingExperienceReviewPrompt,
   cleanFormattedDetail,
@@ -1400,6 +1401,7 @@ function GapColumn({ variantKey, isChallenger, template, settings, workHistory, 
           workHistoryJson: JSON.stringify(workHistory, null, 2),
           jobDescription,
           maxItems: String(MAX_MISSING_EXPERIENCE_ITEMS),
+          maxCovered: String(MAX_COVERED_SKILLS),
         });
         const parsed = await callLlmForJson(settings, prompt, null, { runId: runIdRef.current, feature: "lab" });
         const adapted = adaptChallengerQuestions(parsed);
