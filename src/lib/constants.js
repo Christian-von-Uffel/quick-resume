@@ -12,6 +12,20 @@ export const LH_MIN = 1.15;
 export const LH_MAX = 1.8;
 export const LH_DEFAULT = 1.5;
 export const FS_MAX_DEFAULT = 14;
+// Smallest font the auto-fit will shrink to before spilling onto a second page.
+// At PAGE_W = 620px for 210mm, 1px is about 0.96pt, so 11px is roughly 10.5pt —
+// the bottom of the usual 10–12pt resume body range.
+export const FS_MIN_READABLE = 11;
+// Once text spills onto a second page there is room to spare, so a multi-page
+// fit stops growing the font here (~11.5pt) and spends what's left on line
+// spacing, leaving page two part-empty rather than full of oversized text.
+export const FS_MULTI_PAGE_MAX = 12;
+// The line spacing a multi-page fit holds before it gives any up for font size.
+export const LH_COMFORT = 1.3;
+// How many pages the auto-fit may use before it goes back to shrinking text.
+export const MAX_AUTO_PAGES = 2;
+// Gap between stacked pages in the preview, in unscaled page pixels.
+export const PAGE_GAP = 24;
 export const PROFILE_EXPORT_VERSION = 1;
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";

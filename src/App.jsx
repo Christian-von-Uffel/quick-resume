@@ -9,6 +9,9 @@ import {
   LH_MAX,
   LH_DEFAULT,
   FS_MAX_DEFAULT,
+  FS_MIN_READABLE,
+  MAX_AUTO_PAGES,
+  PAGE_GAP,
   LLM_PROVIDERS,
   FALLBACK_MODEL_OPTIONS,
   CONTACT_FIELDS,
@@ -74,7 +77,7 @@ import {
   scrapeJobPage,
   UsageLimitError,
 } from "./lib/llm";
-import { parseMarkdown, measureBlocks, layoutBlocks, findOptimalFit } from "./lib/markdownLayout";
+import { parseMarkdown, paginateBlocks, findPagedFit } from "./lib/markdownLayout";
 import {
   GENERATE_STEPS,
   buildJobAnalysisPrompt,
@@ -133,7 +136,7 @@ import {
 } from "./lib/enrichExperience";
 import { buildProfileExportPayload } from "./lib/exportProfile";
 import { parseProfileExportFile } from "./lib/importProfile";
-import { printResumePage } from "./lib/exportPdf";
+import { printResumePages } from "./lib/exportPdf";
 
 // How long to wait after the last edit before pushing changes to the database.
 const SYNC_DEBOUNCE_MS = 1000;
@@ -241,6 +244,9 @@ export default function App({ initialData = null, userId = null }) {
   const [itemSpacing, setItemSpacing] = useState(10);
   const [separatorSpacing, setSeparatorSpacing] = useState(16);
   const [autoFit, setAutoFit] = useState(true);
+  // "auto": shrink text down to FS_MIN_READABLE, then use a second page.
+  // "one": shrink as far as it takes to stay on a single page.
+  const [pageLimit, setPageLimit] = useState("auto");
   const [pageScale, setPageScale] = useState(1);
   const [activeMainTab, setActiveMainTab] = useState("workHistory");
   const [activeResumeTab, setActiveResumeTab] = useState("preview");
@@ -251,7 +257,7 @@ export default function App({ initialData = null, userId = null }) {
   const [resumeJobTitleDraft, setResumeJobTitleDraft] = useState("");
   // Theme isn't persisted; it starts light on each load.
   const [theme, setTheme] = useState("light");
-  const pageRef = useRef(null);
+  const pagesRef = useRef(null);
   const previewRef = useRef(null);
   const resumeMenuRef = useRef(null);
   const workHistorySaveToastTimeoutRef = useRef(null);
@@ -643,28 +649,32 @@ export default function App({ initialData = null, userId = null }) {
     }
   }, []);
 
-  const { measuredHeight, measureTime } = useMemo(() => {
-    if (!ready) return { measuredHeight: 0, measureTime: 0 };
+  const { pages, measureTime } = useMemo(() => {
+    if (!ready) return { pages: [], measureTime: 0 };
     const t0 = performance.now();
-    const h = measureBlocks(blocks, fontSize, contentW, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing);
-    return {
-      measuredHeight: Math.round(h),
-      measureTime: +(performance.now() - t0).toFixed(2),
-    };
-  }, [blocks, fontSize, contentW, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing, ready]);
-
-  const positioned = useMemo(() => {
-    if (!ready) return [];
-    return layoutBlocks(blocks, fontSize, contentW, padding, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing);
+    const paged = paginateBlocks(blocks, fontSize, contentW, padding, PAGE_H, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing);
+    return { pages: paged, measureTime: +(performance.now() - t0).toFixed(2) };
   }, [blocks, fontSize, contentW, padding, lineHeightMult, sectionSpacing, itemSpacing, separatorSpacing, ready]);
+  const pageCount = pages.length;
+  const maxPages = pageLimit === "one" ? 1 : MAX_AUTO_PAGES;
 
   useEffect(() => {
     if (!ready || !autoFit) return;
-    const { fontSize: optFs, lineHeightMult: optLh } = findOptimalFit(blocks, contentW, maxH, 6, 24, sectionSpacing, itemSpacing, separatorSpacing);
-    const capped = Math.min(optFs, maxFontSize);
-    setFontSize(capped);
-    setLineHeightMult(optLh);
-  }, [blocks, padding, autoFit, ready, contentW, maxH, maxFontSize, sectionSpacing, itemSpacing, separatorSpacing]);
+    const fit = findPagedFit(blocks, {
+      contentW,
+      pad: padding,
+      pageH: PAGE_H,
+      maxPages,
+      minReadableFs: FS_MIN_READABLE,
+      minFs: 6,
+      maxFs: maxFontSize,
+      sectionSpacing,
+      itemSpacing,
+      separatorSpacing,
+    });
+    setFontSize(fit.fontSize);
+    setLineHeightMult(fit.lineHeightMult);
+  }, [blocks, padding, autoFit, ready, contentW, maxPages, maxFontSize, sectionSpacing, itemSpacing, separatorSpacing]);
 
   const handleSlider = (e) => {
     setAutoFit(false);
@@ -1806,8 +1816,8 @@ export default function App({ initialData = null, userId = null }) {
   };
 
   const handleExportPdf = useCallback(() => {
-    printResumePage(
-      pageRef.current,
+    printResumePages(
+      pagesRef.current,
       buildResumeExportName({
         fullName: profile.name,
         markdown,
@@ -1822,8 +1832,10 @@ export default function App({ initialData = null, userId = null }) {
     recordResumeDownload({ resumeId: selectedResume?.id ?? null });
   }, [markdown, profile.name, selectedResume]);
 
-  const fits = measuredHeight <= maxH;
-  const pct = Math.min((measuredHeight / maxH) * 100, 100);
+  const fits = pageCount <= maxPages;
+  const lastPage = pages[pageCount - 1];
+  const lastPageFill = lastPage ? Math.max(0, Math.round(lastPage.contentBottom - padding)) : 0;
+  const pct = Math.min((lastPageFill / maxH) * 100, 100);
 
   return (
     <div className="h-screen [height:100dvh] flex flex-col overflow-hidden">
@@ -2985,78 +2997,96 @@ export default function App({ initialData = null, userId = null }) {
             )}
           </div>
 
-          <div ref={previewRef} className="flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
+          <div
+            ref={previewRef}
+            className="flex-1 min-h-0 min-w-0 flex flex-col items-center overflow-y-auto overflow-x-hidden pagefit-scrollbar"
+          >
+            {/* Sized to the scaled pages so the scroll container knows their real extent. */}
             <div
-              ref={pageRef}
-              data-pagefit-page
-              className="relative bg-white shadow-2xl shadow-black/50 shrink-0"
+              className="my-auto shrink-0"
               style={{
-                width: PAGE_W,
-                height: PAGE_H,
-                overflow: "hidden",
-                transform: `scale(${pageScale})`,
-                transformOrigin: "center center",
+                width: PAGE_W * pageScale,
+                height: (PAGE_H * Math.max(pageCount, 1) + PAGE_GAP * Math.max(pageCount - 1, 0)) * pageScale,
               }}
             >
-              {positioned.map((item, i) => {
-                if (item.type === "hr") {
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        position: "absolute",
-                        left: padding,
-                        right: padding,
-                        top: item.y,
-                        height: 1,
-                        backgroundColor: "#ddd",
-                      }}
-                    />
-                  );
-                }
-                return (
+              <div
+                ref={pagesRef}
+                style={{ width: PAGE_W, transform: `scale(${pageScale})`, transformOrigin: "top left" }}
+              >
+                {(pageCount ? pages : [{ items: [] }]).map((page, pageIndex) => (
                   <div
-                    key={i}
+                    key={pageIndex}
+                    data-pagefit-page
+                    className="relative bg-white shadow-2xl shadow-black/50"
                     style={{
-                      position: "absolute",
-                      left: item.x,
-                      top: item.y,
-                      fontSize: item.fontSize,
-                      fontWeight: item.fontWeight,
-                      fontFamily: FONT,
-                      lineHeight: `${item.lineHeight}px`,
-                      color: item.color,
-                      whiteSpace: "pre",
+                      width: PAGE_W,
+                      height: PAGE_H,
+                      overflow: "hidden",
+                      marginTop: pageIndex === 0 ? 0 : PAGE_GAP,
                     }}
                   >
-                    {item.text}
+                    {page.items.map((item, i) => {
+                      if (item.type === "hr") {
+                        return (
+                          <div
+                            key={i}
+                            style={{
+                              position: "absolute",
+                              left: padding,
+                              right: padding,
+                              top: item.y,
+                              height: 1,
+                              backgroundColor: "#ddd",
+                            }}
+                          />
+                        );
+                      }
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            position: "absolute",
+                            left: item.x,
+                            top: item.y,
+                            fontSize: item.fontSize,
+                            fontWeight: item.fontWeight,
+                            fontFamily: FONT,
+                            lineHeight: `${item.lineHeight}px`,
+                            color: item.color,
+                            whiteSpace: "pre",
+                          }}
+                        >
+                          {item.text}
+                        </div>
+                      );
+                    })}
+
+                    <div
+                      data-margin-guide
+                      className="absolute pointer-events-none"
+                      style={{
+                        top: padding,
+                        left: padding,
+                        right: padding,
+                        bottom: padding,
+                        border: "1px dashed rgba(0,0,0,0.12)",
+                      }}
+                    />
+
+                    {pageIndex >= maxPages && (
+                      <div
+                        data-overflow
+                        className="absolute bottom-0 left-0 right-0 pointer-events-none"
+                        style={{
+                          height: 48,
+                          background: "linear-gradient(transparent, rgba(248,113,113,0.18))",
+                          borderBottom: "2px solid rgb(248,113,113)",
+                        }}
+                      />
+                    )}
                   </div>
-                );
-              })}
-
-              <div
-                data-margin-guide
-                className="absolute pointer-events-none"
-                style={{
-                  top: padding,
-                  left: padding,
-                  right: padding,
-                  bottom: padding,
-                  border: "1px dashed rgba(0,0,0,0.12)",
-                }}
-              />
-
-              {!fits && (
-                <div
-                  data-overflow
-                  className="absolute bottom-0 left-0 right-0 pointer-events-none"
-                  style={{
-                    height: 48,
-                    background: "linear-gradient(transparent, rgba(248,113,113,0.18))",
-                    borderBottom: "2px solid rgb(248,113,113)",
-                  }}
-                />
-              )}
+                ))}
+              </div>
             </div>
           </div>
 
@@ -3288,6 +3318,40 @@ export default function App({ initialData = null, userId = null }) {
             </div>
           </div>
 
+          {/* Pages */}
+          <div>
+            <p className="text-xs text-neutral-500 uppercase tracking-widest mb-1.5">
+              Pages
+            </p>
+            <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-neutral-800 p-0.5 text-xs">
+              {[
+                ["auto", `Up to ${MAX_AUTO_PAGES}`],
+                ["one", "Always 1"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => {
+                    setPageLimit(value);
+                    setAutoFit(true);
+                  }}
+                  className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                    pageLimit === value
+                      ? "bg-neutral-50 text-neutral-900"
+                      : "text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-xs text-neutral-600">
+              {pageLimit === "one"
+                ? "Text shrinks as far as it takes to stay on one page."
+                : "A second page is used before the text gets too small to read."}
+            </p>
+          </div>
+
           {/* Page fit */}
           <div>
             <p className="text-xs text-neutral-500 uppercase tracking-widest mb-1.5">
@@ -3304,10 +3368,14 @@ export default function App({ initialData = null, userId = null }) {
             </div>
             <div className="flex items-baseline justify-between text-xs">
               <span className={`font-medium ${fits ? "text-emerald-400" : "text-red-400"}`}>
-                {fits ? "Fits on 1 page" : `Overflow +${measuredHeight - maxH}px`}
+                {pageCount <= 1
+                  ? "Fits on 1 page"
+                  : fits
+                    ? `${pageCount} pages`
+                    : `${pageCount} pages, over the ${maxPages}-page limit`}
               </span>
               <span className="text-neutral-600 font-mono tabular-nums">
-                {measuredHeight}/{maxH}px · {measureTime}ms
+                {pageCount > 1 ? `p${pageCount} ` : ""}{lastPageFill}/{maxH}px · {measureTime}ms
               </span>
             </div>
           </div>
