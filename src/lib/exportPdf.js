@@ -1,95 +1,74 @@
-import { PAGE_W } from "./constants";
+import { PAGE_W, PAGE_H } from "./constants";
 
-// Print `page` (the resume A4 element) on its own as a full-bleed PDF. Every
-// sibling is hidden and every ancestor's transform/overflow is neutralized so
-// the browser's print pipeline sees only the page, scaled to fill A4. All DOM
-// mutations are recorded and reverted in `restore`, which runs after printing.
+// 210mm at CSS 96dpi: the width of an A4 sheet in the browser's print pipeline.
+const A4_WIDTH_PX = 794;
+
+// Print every resume page (the `[data-pagefit-page]` elements inside `pagesEl`)
+// as one A4-per-page PDF. The pages are cloned into a print-only root at the end
+// of <body>; a print stylesheet hides everything else and places clone i at the
+// top of sheet i (`top: i * 297mm`), scaled from the 620px layout width up to A4.
+// The app's own DOM is never touched, and the clones are removed after printing.
 // `exportName` seeds document.title, which browsers use as the default filename.
-export function printResumePage(page, exportName) {
-  if (!page) return;
+export function printResumePages(pagesEl, exportName) {
+  if (!pagesEl) return;
+  const pages = Array.from(pagesEl.querySelectorAll("[data-pagefit-page]"));
+  if (!pages.length) return;
 
-  const hiddenEls = [];
-  const ancestorSaved = [];
-  let current = page;
-  while (current.parentElement) {
-    const parent = current.parentElement;
-    Array.from(parent.children).forEach((sibling) => {
-      if (sibling !== current) {
-        hiddenEls.push({ el: sibling, prev: sibling.style.display });
-        sibling.style.display = "none";
-      }
-    });
-    if (parent !== document.body) {
-      ancestorSaved.push({
-        el: parent,
-        overflow: parent.style.overflow,
-        transform: parent.style.transform,
-        position: parent.style.position,
-        visibility: parent.style.visibility,
-        background: parent.style.background,
-      });
-      parent.style.overflow = "visible";
-      parent.style.transform = "none";
-      parent.style.visibility = "visible";
-      parent.style.background = "none";
-    }
-    current = parent;
-  }
+  const printScale = A4_WIDTH_PX / PAGE_W;
 
-  const pageSaved = {
-    position: page.style.position,
-    top: page.style.top,
-    left: page.style.left,
-    transform: page.style.transform,
-    transformOrigin: page.style.transformOrigin,
-    boxShadow: page.style.boxShadow,
-    background: page.style.background,
-  };
-  const printScale = 794 / PAGE_W;
-  page.style.position = "fixed";
-  page.style.top = "0";
-  page.style.left = "0";
-  page.style.transform = `scale(${printScale})`;
-  page.style.transformOrigin = "top left";
-  page.style.boxShadow = "none";
-  page.style.background = "white";
-
-  const guides = page.querySelectorAll("[data-margin-guide],[data-overflow]");
-  guides.forEach((g) => (g.style.display = "none"));
+  const root = document.createElement("div");
+  root.setAttribute("data-print-root", "");
+  pages.forEach((page, index) => {
+    const clone = page.cloneNode(true);
+    clone.querySelectorAll("[data-margin-guide],[data-overflow]").forEach((guide) => guide.remove());
+    clone.removeAttribute("class");
+    clone.style.cssText = [
+      "position:absolute",
+      "left:0",
+      `top:calc(${index} * 297mm)`,
+      `width:${PAGE_W}px`,
+      `height:${PAGE_H}px`,
+      "overflow:hidden",
+      "background:white",
+      "box-shadow:none",
+      "margin:0",
+      `transform:scale(${printScale})`,
+      "transform-origin:top left",
+    ].join(";");
+    root.appendChild(clone);
+  });
 
   const style = document.createElement("style");
   style.textContent = `
-    @page { size: A4; margin: 0; }
-    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-    body::before { display: none !important; }
+    [data-print-root] { display: none; }
+    @media print {
+      @page { size: A4; margin: 0; }
+      html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+        height: auto !important;
+        overflow: visible !important;
+        background: white !important;
+      }
+      body > :not([data-print-root]) { display: none !important; }
+      body::before { display: none !important; }
+      [data-print-root] { display: block; position: absolute; top: 0; left: 0; }
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    }
   `;
-  document.head.appendChild(style);
 
+  const savedTitle = document.title;
   const restore = () => {
+    root.remove();
     style.remove();
-    guides.forEach((g) => (g.style.display = ""));
-    Object.assign(page.style, pageSaved);
-    ancestorSaved.forEach((s) => {
-      s.el.style.overflow = s.overflow;
-      s.el.style.transform = s.transform;
-      s.el.style.position = s.position;
-      s.el.style.visibility = s.visibility;
-      s.el.style.background = s.background;
-      s.el.style.display = s.display;
-    });
-    hiddenEls.forEach((h) => (h.el.style.display = h.prev));
+    document.title = savedTitle;
     window.onafterprint = null;
   };
 
-  const savedTitle = document.title;
+  document.head.appendChild(style);
+  document.body.appendChild(root);
   // Browsers use document.title as the default "Save as PDF" filename.
   document.title = exportName;
-
-  const origRestore = restore;
-  const restoreWithTitle = () => {
-    origRestore();
-    document.title = savedTitle;
-  };
-  window.onafterprint = restoreWithTitle;
+  window.onafterprint = restore;
   window.print();
 }
