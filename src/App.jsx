@@ -101,11 +101,14 @@ import { AccountSection } from "./components/AccountSection";
 import { ExperienceReview } from "./components/ExperienceReview";
 import { EnrichExperience } from "./components/EnrichExperience";
 import { PipelineSteps } from "./components/PipelineSteps";
+import { SkillsChecklist } from "./components/SkillsChecklist";
 import Onboarding from "./components/Onboarding";
 import { importResume, coerceImportedProfile, needsMistralOcr, resolveImportMimeType } from "./lib/importResume";
 import {
   buildMissingExperienceReviewPrompt,
   validateMissingExperienceReview,
+  validateCoveredSkills,
+  buildSkillsChecklist,
   MISSING_EXPERIENCE_KIND_LABELS,
   MISSING_EXPERIENCE_STEPS,
   formatExperienceElaboration,
@@ -207,8 +210,16 @@ export default function App({ initialData = null, userId = null }) {
   // on failure so the step list can show WHERE the run died.
   const [missingExperienceStepIndex, setMissingExperienceStepIndex] = useState(-1);
   const [missingExperienceDetails, setMissingExperienceDetails] = useState([]);
+  // What the same review found the stored history already shows — the green
+  // checks above the questions. Bumping skillsChecklistRun replays the
+  // checklist's enter animation for a fresh review.
+  const [coveredJobSkills, setCoveredJobSkills] = useState([]);
+  const [skillsChecklistRun, setSkillsChecklistRun] = useState(0);
   const [confirmedMissingExperienceSkills, setConfirmedMissingExperienceSkills] = useState([]);
   const [dismissedMissingExperienceSkills, setDismissedMissingExperienceSkills] = useState([]);
+  // Questions whose detail has been saved to a role: they leave the question
+  // list (via dismissed) but stay a green check on the checklist.
+  const [savedMissingExperienceSkills, setSavedMissingExperienceSkills] = useState([]);
   const [missingExperiencePositionFilters, setMissingExperiencePositionFilters] = useState({});
   const [missingExperienceSelectedPositions, setMissingExperienceSelectedPositions] = useState({});
   // Raw answers keyed by skill, then by work-history id: { [skill]: { [workId]: text } }
@@ -412,6 +423,23 @@ export default function App({ initialData = null, userId = null }) {
         (detail) => !dismissedMissingExperienceSkills.includes(detail.skill)
       ),
     [dismissedMissingExperienceSkills, missingExperienceDetails]
+  );
+  const skillsChecklist = useMemo(
+    () =>
+      buildSkillsChecklist({
+        covered: coveredJobSkills,
+        gaps: missingExperienceDetails,
+        confirmedSkills: confirmedMissingExperienceSkills,
+        dismissedSkills: dismissedMissingExperienceSkills,
+        savedSkills: savedMissingExperienceSkills,
+      }),
+    [
+      coveredJobSkills,
+      missingExperienceDetails,
+      confirmedMissingExperienceSkills,
+      dismissedMissingExperienceSkills,
+      savedMissingExperienceSkills,
+    ]
   );
   const totalSelectedMissingExperiencePositions = useMemo(
     () =>
@@ -1270,7 +1298,10 @@ export default function App({ initialData = null, userId = null }) {
       // Step 2: validate the questions and connect each to the stored roles it names.
       setMissingExperienceStepIndex(1);
       const details = validateMissingExperienceReview(parsed, workHistory);
+      const covered = validateCoveredSkills(parsed, workHistory);
       setMissingExperienceDetails(details);
+      setCoveredJobSkills(covered);
+      setSkillsChecklistRun((run) => run + 1);
 
       // Recorded post-validation: the count is the gaps actually put in front
       // of the person. Each gap is a question they confirm or dismiss.
@@ -1287,14 +1318,18 @@ export default function App({ initialData = null, userId = null }) {
       );
       setConfirmedMissingExperienceSkills([]);
       setDismissedMissingExperienceSkills([]);
+      setSavedMissingExperienceSkills([]);
       setMissingExperiencePositionFilters({});
       setMissingExperienceSelectedPositions({});
       setMissingExperienceElaborations({});
       setMissingExperienceSaveToast("");
       setMissingExperienceStepIndex(-1);
+      const coveredNote = covered.length
+        ? `Your work history already shows ${covered.length} thing${covered.length === 1 ? "" : "s"} this job asks for. `
+        : "";
       setMissingExperienceStatus(
         details.length
-          ? `Found ${details.length} way${details.length === 1 ? "" : "s"} to address experience this job asks for.`
+          ? `${coveredNote}Found ${details.length} way${details.length === 1 ? "" : "s"} to address the rest.`
           : "Your work history already covers what this job description asks for."
       );
     } catch (error) {
@@ -1529,6 +1564,10 @@ export default function App({ initialData = null, userId = null }) {
           .map((detail) => detail.skill)
       );
       setDismissedMissingExperienceSkills((current) => {
+        const additions = [...savedSkills].filter((skill) => !current.includes(skill));
+        return additions.length ? [...current, ...additions] : current;
+      });
+      setSavedMissingExperienceSkills((current) => {
         const additions = [...savedSkills].filter((skill) => !current.includes(skill));
         return additions.length ? [...current, ...additions] : current;
       });
@@ -2517,6 +2556,13 @@ export default function App({ initialData = null, userId = null }) {
                   >
                     {missingExperienceStatus}
                   </p>
+                )}
+                {!isFindingMissingExperience && (
+                  <SkillsChecklist
+                    items={skillsChecklist.items}
+                    counts={skillsChecklist.counts}
+                    runKey={skillsChecklistRun}
+                  />
                 )}
                 {missingExperienceSaveToast && (
                   <div role="status" className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-100">

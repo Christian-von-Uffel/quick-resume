@@ -5,6 +5,9 @@ import {
   MAX_MISSING_EXPERIENCE_ITEMS,
   buildMissingExperienceReviewPrompt,
   validateMissingExperienceReview,
+  MAX_COVERED_SKILLS,
+  validateCoveredSkills,
+  buildSkillsChecklist,
   cleanFormattedDetail,
 } from "./reviewExperience";
 
@@ -158,5 +161,154 @@ describe("cleanFormattedDetail", () => {
   it("strips fences, bullets, quotes, and collapses lines", () => {
     expect(cleanFormattedDetail('```\n- "Presented results\nto execs"\n```')).toBe("Presented results to execs");
     expect(cleanFormattedDetail(null)).toBe("");
+  });
+});
+
+describe("coveredSkills in the gap review", () => {
+  it("asks for what the history already shows alongside the gaps", () => {
+    const prompt = buildMissingExperienceReviewPrompt({ workHistory, jobDescription: "SQL. Mentoring." });
+    expect(prompt).toContain('"coveredSkills"');
+    expect(prompt).toMatch(/a stored detail shows outright/i);
+    expect(prompt).toContain(`Up to ${MAX_COVERED_SKILLS} items`);
+  });
+
+  it("keeps covered skills whose evidence resolves to a stored role", () => {
+    const result = validateCoveredSkills(
+      {
+        coveredSkills: [
+          {
+            skill: "Churn modelling",
+            kind: "method",
+            evidence: [
+              { position: "senior product manager", company: "Beta Inc", detail: "Built churn model" },
+              { position: "Imaginary Director", company: "Nowhere Corp", detail: "hallucinated" },
+            ],
+          },
+        ],
+      },
+      workHistory
+    );
+
+    expect(result).toEqual([
+      {
+        id: "covered-0",
+        skill: "Churn modelling",
+        kind: "method",
+        evidence: [{ workId: "w1", label: "Senior Product Manager at Beta Inc", detail: "Built churn model" }],
+      },
+    ]);
+  });
+
+  it("drops a check mark that points at nothing in the stored history", () => {
+    const result = validateCoveredSkills(
+      {
+        coveredSkills: [
+          { skill: "SQL", evidence: [] },
+          { skill: "Python", evidence: [{ position: "Wizard", company: "Hogwarts", detail: "spells" }] },
+          { skill: "Reporting", evidence: [{ position: "Business Analyst", company: "Gamma LLC", detail: "Reporting" }] },
+        ],
+      },
+      workHistory
+    );
+
+    expect(result.map((item) => item.skill)).toEqual(["Reporting"]);
+    expect(result[0].kind).toBe("responsibility");
+  });
+
+  it("dedupes case-insensitively, caps the list, and tolerates a missing key", () => {
+    const evidence = [{ position: "Business Analyst", company: "Gamma LLC" }];
+    const many = Array.from({ length: MAX_COVERED_SKILLS + 3 }, (_, i) => ({ skill: `Skill ${i}`, evidence }));
+    const result = validateCoveredSkills(
+      { coveredSkills: [{ skill: "sql", evidence }, { skill: "SQL", evidence }, ...many] },
+      workHistory
+    );
+
+    expect(result).toHaveLength(MAX_COVERED_SKILLS);
+    expect(result.filter((item) => item.skill.toLowerCase() === "sql")).toHaveLength(1);
+    expect(validateCoveredSkills({ missingExperienceDetails: [] }, workHistory)).toEqual([]);
+    expect(validateCoveredSkills(null, workHistory)).toEqual([]);
+  });
+});
+
+describe("buildSkillsChecklist", () => {
+  const covered = [
+    { skill: "SQL", kind: "tool", evidence: [{ workId: "w2", label: "Business Analyst at Gamma LLC", detail: "Reporting" }] },
+    { skill: "Mentoring", kind: "leadership", evidence: [] },
+  ];
+  const gaps = [
+    { skill: "BigQuery", kind: "tool" },
+    { skill: "Jira", kind: "tool" },
+    { skill: "Confluence", kind: "tool" },
+    { skill: "mentoring", kind: "leadership" },
+  ];
+
+  it("lists covered skills first, then the gap questions in their asked order", () => {
+    const { items } = buildSkillsChecklist({ covered, gaps });
+    expect(items.map((item) => [item.skill, item.status])).toEqual([
+      ["SQL", "covered"],
+      ["BigQuery", "open"],
+      ["Jira", "open"],
+      ["Confluence", "open"],
+      ["mentoring", "open"],
+    ]);
+    expect(items[0].evidence[0].label).toBe("Business Analyst at Gamma LLC");
+  });
+
+  it("leads each group with explicitly named tools, keeping the rest in order", () => {
+    const { items } = buildSkillsChecklist({
+      covered: [
+        { skill: "Experimentation", kind: "method" },
+        { skill: "Stakeholder reporting", kind: "communication" },
+        { skill: "SQL", kind: "tool" },
+        { skill: "Python", kind: "tool" },
+      ],
+      gaps: [
+        { skill: "Mentoring", kind: "leadership" },
+        { skill: "Ambiguity", kind: "approach" },
+        { skill: "Confluence", kind: "tool" },
+        { skill: "Jira", kind: "tool" },
+      ],
+    });
+    expect(items.map((item) => item.skill)).toEqual([
+      "SQL",
+      "Python",
+      "Experimentation",
+      "Stakeholder reporting",
+      "Confluence",
+      "Jira",
+      "Mentoring",
+      "Ambiguity",
+    ]);
+  });
+
+  it("lets a question override a covered claim about the same skill", () => {
+    const { items } = buildSkillsChecklist({ covered, gaps });
+    expect(items.filter((item) => item.skill.toLowerCase() === "mentoring")).toHaveLength(1);
+    expect(items.find((item) => item.skill === "mentoring").status).toBe("open");
+  });
+
+  it("reflects the person's answers with saved winning over confirmed and dismissed", () => {
+    const { items, counts } = buildSkillsChecklist({
+      covered,
+      gaps,
+      confirmedSkills: ["BigQuery", "Jira"],
+      dismissedSkills: ["Jira", "Confluence"],
+      savedSkills: ["Jira"],
+    });
+    expect(Object.fromEntries(items.map((item) => [item.skill, item.status]))).toEqual({
+      SQL: "covered",
+      BigQuery: "confirmed",
+      Jira: "added",
+      Confluence: "dismissed",
+      mentoring: "open",
+    });
+    expect(counts).toEqual({ covered: 1, added: 1, confirmed: 1, dismissed: 1, open: 1 });
+  });
+
+  it("is empty when there is nothing to show", () => {
+    expect(buildSkillsChecklist()).toEqual({
+      items: [],
+      counts: { covered: 0, added: 0, confirmed: 0, dismissed: 0, open: 0 },
+    });
   });
 });

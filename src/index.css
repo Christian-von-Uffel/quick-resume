@@ -70,3 +70,64 @@
 .pagefit-scrollbar::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
+
+/* Skills checklist (src/components/SkillsChecklist.jsx): chips enter one after
+   another, each check draws itself in and each mark pops. The icon's delay is
+   set inline per chip; the SVG inherits it so the draw starts after the chip
+   has landed. */
+@keyframes skill-chip-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes skill-check-draw {
+  from {
+    stroke-dashoffset: 14;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes skill-icon-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.skill-chip-enter {
+  animation: skill-chip-enter 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.skill-icon-pop {
+  animation: skill-icon-pop 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: inherit;
+  transform-origin: center;
+}
+.skill-check-draw {
+  stroke-dasharray: 14;
+  stroke-dashoffset: 14;
+  animation: skill-check-draw 260ms ease-out forwards;
+  animation-delay: inherit;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skill-chip-enter,
+  .skill-icon-pop,
+  .skill-check-draw {
+    animation: none;
+  }
+  .skill-check-draw {
+    stroke-dashoffset: 0;
+  }
+}

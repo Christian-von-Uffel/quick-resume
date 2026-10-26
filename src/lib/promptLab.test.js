@@ -13,6 +13,7 @@ import { buildClarityReviewPrompt, validateClarityReview } from "./clarifyExperi
 import { buildOpeningQuestionsPrompt, validateOpeningQuestions } from "./enrichExperience";
 import {
   MAX_MISSING_EXPERIENCE_ITEMS,
+  MAX_COVERED_SKILLS,
   buildMissingExperienceReviewPrompt,
   validateMissingExperienceReview,
 } from "./reviewExperience";
@@ -209,6 +210,7 @@ describe("production templates", () => {
       workHistoryJson: JSON.stringify(workHistory, null, 2),
       jobDescription,
       maxItems: String(MAX_MISSING_EXPERIENCE_ITEMS),
+      maxCovered: String(MAX_COVERED_SKILLS),
     });
     expect(filled).toBe(buildMissingExperienceReviewPrompt({ workHistory, jobDescription }));
   });
