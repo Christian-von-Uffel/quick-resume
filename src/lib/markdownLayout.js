@@ -1,4 +1,4 @@
-import { prepareWithSegments, layoutNextLine } from "@chenglou/pretext";
+import { prepareWithSegments, layoutWithLines } from "@chenglou/pretext";
 import { FONT, LH_DEFAULT, LH_MIN, LH_MAX, LH_COMFORT, FS_MAX_DEFAULT, FS_MULTI_PAGE_MAX } from "./constants";
 
 /* ── Spacing scale ─────────────────────────────────────────────
@@ -143,26 +143,14 @@ export function measureBlocks(blocks, baseFontSize, contentW, lhMult = LH_DEFAUL
 const ASIDE_MAX_SHARE = 0.45;
 
 /* ── Line breaking ─────────────────────────────────────────
- * pretext 0.0.3's batch walk (layoutWithLines, walkLineRanges)
- * drops a segment when it breaks a line between two runs with no
- * space between them — "data-|accuracy", "LLM|/RAG" — so a word
- * silently vanishes from the page. Stepping one line at a time
- * with layoutNextLine breaks the same text correctly, so every
- * line is taken that way.
+ * pretext before 1.0.0 dropped a segment from its batch walk
+ * wherever a line broke between two runs with no space between
+ * them — "data-|accuracy", "LLM|/RAG" — so a word silently
+ * vanished from the page. 1.0.0 keeps every segment, so a
+ * block's lines come from one layoutWithLines call.
  */
-const LINE_START = { segmentIndex: 0, graphemeIndex: 0 };
-
-function breakLines(text, font, width) {
-  const prepared = prepareWithSegments(text, font);
-  const lines = [];
-  for (let line = layoutNextLine(prepared, LINE_START, width); line; line = layoutNextLine(prepared, line.end, width)) {
-    lines.push(line);
-  }
-  return lines;
-}
-
 function textLines(text, font, fontSize, width, lineHeight, block) {
-  return breakLines(text, font, width).map((line) => ({
+  return layoutWithLines(prepareWithSegments(text, font), width, lineHeight).lines.map((line) => ({
     type: "text",
     text: line.text,
     width: line.width,

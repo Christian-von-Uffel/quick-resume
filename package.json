@@ -28,7 +28,7 @@
     "auth:configure": "node scripts/configure-supabase-auth.mjs"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.3",
+    "@chenglou/pretext": "^1.0.0",
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.110.2",
     "next": "^16.2.10",

@@ -22,15 +22,9 @@ vi.mock("@chenglou/pretext", () => {
   };
   return {
     prepareWithSegments: (text, font) => ({ text, font }),
-    // The cursor's segmentIndex stands in for "which wrapped line is next".
-    layoutNextLine: (prepared, cursor, width) => {
-      const text = wrap(prepared, width)[cursor.segmentIndex];
-      if (text === undefined) return null;
-      return {
-        text,
-        width: text.length * glyphWidth(prepared.font),
-        end: { segmentIndex: cursor.segmentIndex + 1, graphemeIndex: 0 },
-      };
+    layoutWithLines: (prepared, width, lineHeight) => {
+      const lines = wrap(prepared, width).map((text) => ({ text, width: text.length * glyphWidth(prepared.font) }));
+      return { lines, lineCount: lines.length, height: lines.length * lineHeight };
     },
   };
 });
