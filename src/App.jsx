@@ -86,6 +86,10 @@ import {
   validateSelectedResumeEvidence,
   ensureRequiredRolesSelected,
   composeResume,
+  checkComposedResume,
+  repairComposedResumePrompt,
+  resumeHeadline,
+  stripCodeFence,
   extractJobDescription,
   extractCleanedJobDescription,
   collapseBlankLines,
@@ -105,6 +109,7 @@ import { ExperienceReview } from "./components/ExperienceReview";
 import { EnrichExperience } from "./components/EnrichExperience";
 import { PipelineSteps } from "./components/PipelineSteps";
 import { SkillsChecklist } from "./components/SkillsChecklist";
+import { SuggestedTextarea } from "./components/SuggestedTextarea";
 import Onboarding from "./components/Onboarding";
 import { importResume, coerceImportedProfile, needsMistralOcr, resolveImportMimeType } from "./lib/importResume";
 import {
@@ -268,6 +273,9 @@ export default function App({ initialData = null, userId = null }) {
   // questions.id for each surfaced skill (details are keyed by skill, not id).
   const gapAnalysisIdRef = useRef(null);
   const gapQuestionIdsRef = useRef({});
+  // suggestions.id for each grounded answer shown as ghost text, keyed
+  // "skill\u0000workId", so accepting or typing over it can be recorded.
+  const gapSuggestionIdsRef = useRef({});
   // Details can be saved in batches, so the running total is kept here.
   const gapDetailsSavedRef = useRef(0);
   // Cloud-sync bookkeeping: the Supabase client, the last snapshot written, and
@@ -1326,6 +1334,7 @@ export default function App({ initialData = null, userId = null }) {
       gapQuestionIdsRef.current = Object.fromEntries(
         details.map((detail, index) => [detail.skill, questionIds[index]])
       );
+      gapSuggestionIdsRef.current = {};
       setConfirmedMissingExperienceSkills([]);
       setDismissedMissingExperienceSkills([]);
       setSavedMissingExperienceSkills([]);
@@ -1375,6 +1384,20 @@ export default function App({ initialData = null, userId = null }) {
     // Confirming is the answer. Anything the person types afterwards is
     // recorded on Save, once it's final.
     recordQuestionAnswered(gapQuestionIdsRef.current[skill]);
+  };
+
+  const gapSuggestionKey = (skill, workId) => `${skill}\u0000${workId}`;
+
+  const handleMissingExperienceSuggestionShown = (skill, workId, suggestion) => {
+    gapSuggestionIdsRef.current[gapSuggestionKey(skill, workId)] = {
+      id: recordSuggestionPresented(null, { suggestion, questionId: gapQuestionIdsRef.current[skill] }),
+      suggestion,
+    };
+  };
+
+  const handleMissingExperienceSuggestionAccepted = (skill, workId) => {
+    const shown = gapSuggestionIdsRef.current[gapSuggestionKey(skill, workId)];
+    if (shown) recordSuggestionAccepted(shown.id);
   };
 
   const handleMissingExperienceElaborationChange = (skill, workId, value) => {
@@ -1564,6 +1587,10 @@ export default function App({ initialData = null, userId = null }) {
         recordQuestionAnswered(gapQuestionIdsRef.current[detail.skill], {
           answerText: answers.join("\n"),
         });
+        for (const [workId, value] of Object.entries(missingExperienceElaborations[detail.skill] ?? {})) {
+          const shown = gapSuggestionIdsRef.current[gapSuggestionKey(detail.skill, workId)];
+          if (shown && value.trim() && value.trim() !== shown.suggestion) recordSuggestionRejected(shown.id);
+        }
       }
 
       // Drop the questions we just saved so they leave the list (and the whole
@@ -1757,19 +1784,41 @@ export default function App({ initialData = null, userId = null }) {
 
       // Step 3: compose the markdown from the pre-ranked evidence.
       setGenerateStepIndex(2);
-      const text = await callLlm(
-        llmSettings,
-        composeResume({
-          profile,
-          selectedEvidence,
-          jobAnalysis,
-          instructions: generationInstructions,
-          coverage,
-        }),
-        null,
-        { runId: generationId, feature: "resume_generation" }
-      );
-      const nextMarkdown = text.replace(/^```(?:markdown)?\s*/i, "").replace(/```$/i, "").trim();
+      const composePrompt = composeResume({
+        profile,
+        selectedEvidence,
+        jobAnalysis,
+        instructions: generationInstructions,
+        coverage,
+      });
+      const text = await callLlm(llmSettings, composePrompt, null, {
+        runId: generationId,
+        feature: "resume_generation",
+      });
+      // The format block is a schema: compile the response against it and hand
+      // it back once for repair when it doesn't fit (a rendered HTML page, a
+      // missing summary, a run-on summary), the way JSON calls are repaired.
+      const headline = resumeHeadline({ selectedEvidence, jobAnalysis });
+      let nextMarkdown = stripCodeFence(text);
+      let problems = checkComposedResume(nextMarkdown, { targetTitle: jobAnalysis.position, headline });
+      if (problems.length) {
+        const repaired = await callLlm(
+          llmSettings,
+          repairComposedResumePrompt({ profile, markdown: nextMarkdown, problems, headline }),
+          null,
+          {
+            runId: generationId,
+            feature: "resume_generation",
+            purpose: "repair",
+            attributePrompt: composePrompt,
+          }
+        );
+        nextMarkdown = stripCodeFence(repaired);
+        problems = checkComposedResume(nextMarkdown, { targetTitle: jobAnalysis.position, headline });
+        if (problems.some((problem) => problem.severity === "structure")) {
+          throw new Error("The model returned the resume in an unexpected format. Please try again.");
+        }
+      }
       // Save each generation as its own resume so existing resumes are never overwritten.
       const generatedResume = {
         ...createResume(jobAnalysis.company, jobAnalysis.position),
@@ -2636,8 +2685,9 @@ export default function App({ initialData = null, userId = null }) {
                               const normalizedPositionFilter = positionFilter.trim().toLowerCase();
                               // The review names the roles where this gap probably happened;
                               // surface those first so the person starts from the likely memory.
-                              const suggestedWhyByWorkId = new Map(
-                                (detail.likelyRoles ?? []).map((role) => [role.workId, role.why])
+                              // Each may also carry a grounded draft answer, offered as ghost text.
+                              const likelyRoleByWorkId = new Map(
+                                (detail.likelyRoles ?? []).map((role) => [role.workId, role])
                               );
                               const filteredWorkHistory = workHistoryByPositionCompany
                                 .filter((item) => {
@@ -2646,7 +2696,7 @@ export default function App({ initialData = null, userId = null }) {
                                 })
                                 .sort(
                                   (a, b) =>
-                                    Number(suggestedWhyByWorkId.has(b.id)) - Number(suggestedWhyByWorkId.has(a.id))
+                                    Number(likelyRoleByWorkId.has(b.id)) - Number(likelyRoleByWorkId.has(a.id))
                                 );
                               const selectedWorkIdSet = new Set(missingExperienceSelectedPositions[detail.skill] ?? []);
                               const detailText = normalizeDetailForComparison(detail.plainspokenDetail);
@@ -2695,9 +2745,9 @@ export default function App({ initialData = null, userId = null }) {
                                                 className="rounded border-neutral-600 bg-neutral-900 text-amber-400 focus:ring-amber-400"
                                               />
                                               <span>{roleLabel}</span>
-                                              {suggestedWhyByWorkId.has(item.id) && (
+                                              {likelyRoleByWorkId.has(item.id) && (
                                                 <span
-                                                  title={suggestedWhyByWorkId.get(item.id) || undefined}
+                                                  title={likelyRoleByWorkId.get(item.id).why || undefined}
                                                   className="ml-auto shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
                                                 >
                                                   Suggested
@@ -2706,12 +2756,14 @@ export default function App({ initialData = null, userId = null }) {
                                             </button>
                                             {isSelected && !hasDetail && (
                                               <div className="border-t border-neutral-800/60 bg-neutral-950 px-3 py-3">
-                                                <textarea
+                                                <SuggestedTextarea
                                                   value={elaboration}
-                                                  onChange={(e) => handleMissingExperienceElaborationChange(detail.skill, item.id, e.target.value)}
+                                                  onChange={(value) => handleMissingExperienceElaborationChange(detail.skill, item.id, value)}
+                                                  suggestion={likelyRoleByWorkId.get(item.id)?.suggestedAnswer ?? ""}
+                                                  onSuggestionShown={(suggestion) => handleMissingExperienceSuggestionShown(detail.skill, item.id, suggestion)}
+                                                  onAcceptSuggestion={() => handleMissingExperienceSuggestionAccepted(detail.skill, item.id)}
                                                   rows={3}
                                                   placeholder={detail.answerPlaceholder}
-                                                  className="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
                                                 />
                                               </div>
                                             )}

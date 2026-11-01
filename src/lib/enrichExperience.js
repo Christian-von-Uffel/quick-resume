@@ -8,12 +8,12 @@ import { renderPromptTemplate } from "./promptTemplate";
 
 // The "Expand experience" flow for a single sparse position. Instead of guessing
 // what job POSTINGS for the title demand (which produced abstract "responsibility
-// area" wordslop), this asks the person a few dead-simple, grounded questions about
-// what they actually do, then branches off their own answers like a friendly
-// colleague — so it surfaces the real day-to-day, the problems they solve, who they
-// solve them for, and what's hardest to replace about them:
-//   Call 1   buildOpeningQuestionsPrompt  -> 2-3 simple "what do you spend your time on?" questions
-//   Call 2+  buildFollowupQuestionsPrompt  -> next questions that branch off the transcript, or "enough"
+// area" wordslop), this chats with the person the way a curious friend would —
+// easy, everyday questions they can answer from memory, each picking up on what
+// they just said — so it surfaces the real day-to-day, the problems they solve,
+// who they solve them for, and what people come to them for:
+//   Call 1   buildOpeningQuestionsPrompt  -> 2-3 easy "what takes up your week?" questions
+//   Call 2+  buildFollowupQuestionsPrompt  -> next questions that pick up on the transcript, or "enough"
 //   Call N   buildComposePrompt            -> 1-3 plainspoken bullets telling the story
 // Every option is a candidate the person taps to confirm, never an asserted fact.
 
@@ -51,8 +51,14 @@ function formatTranscript(transcript, emptyLabel) {
 // is either ` at Acme` or empty; `$tenureBlock` is the optional <tenure> block
 // (including leading newlines) or empty — same shape buildOpeningQuestionsPrompt
 // always produced.
+//
+// The prompt is deliberately short: it sets the register (a curious friend
+// asking easy questions) and hands over a filled-in example of the shape. The
+// shape itself — kinds, option counts, round caps — is enforced by
+// validateOpeningQuestions / validateFollowupQuestions, not by rules in the
+// prompt.
 export const EXPANSION_OPENING_PROMPT_TEMPLATE = `<task>
-Ask short, direct questions to find out what someone actually does in their job as "$jobTitle"$companyClause. We want to understand more about what they do in their role. Ask the FIRST 2 or 3 questions. You only ask questions with tappable answer options.
+You're having a friendly, low-key chat with someone about their job as "$jobTitle"$companyClause, so we can help them put into words what they actually do. Ask the first 2 or 3 questions. Each question comes with tappable answers.
 </task>
 
 <role_title>
@@ -63,48 +69,21 @@ $jobTitle
 $experienceDetails
 </current_description>
 
-<what_to_find_out>
-Across the whole conversation we want to learn, in plain terms:
-1. What work they spend the most time doing.
-2. What high-value problems they work on — the hard or important stuff, not the busywork.
-3. Which people or teams they work with, and who they do the work for.
-4. How many people work at the company.
-5. Whether they do the work themselves or manage other people.
-Items 4 and 5 are your opening questions below. Items 1-3 you open here and dig into later.
-</what_to_find_out>
+<how_to_ask>
+Ask the way a curious friend would over coffee: one easy thing at a time, in everyday words, so they can answer from memory in a second without having to analyze anything. "What takes up most of your week?" is the right register.
+Write the answers the way the person would say them out loud. For an engineer: "Writing code", "Reviewing other people's code", "Figuring out what to build". For a nurse: "Looking after patients", "Giving meds", "Charting". For a line cook: "Cooking on the line", "Prepping before service", "Working on the menu". Give 3 to 6 that fit this role and cover the hands-on work as well as the meetings.
+The answers are offers for the person to tap, not facts about them, and they can always tap "Something else…" or "Skip", so the answers don't need to cover everything. Skip anything the current description already says.
+</how_to_ask>
 
-<question_rules>
-Write every question so a literal-minded 12-year-old could answer it without guessing what you mean.
-- One question asks about ONE thing. Never join two things with "and" or "or".
-- Short, common words. No jargon, no abbreviations, no buzzwords.
-- Say it straight. No "Let's", "Tell me about", "Walk me through", greetings, or compliments.
-- Ask about things a person DID — actions you could have watched. Not feelings, opinions, or their "role" in the abstract.
-- Each question can be read only one way. If a word is fuzzy ("impact", "ownership", "involvement"), cut it and name the concrete thing.
-- No idioms, metaphors, or sarcasm. No double negatives.
-- Every question is answerable by tapping: pick one, tap all that apply, or Yes/No.
-</question_rules>
+<what_the_whole_chat_should_uncover>
+What fills their week, which hard or important problems land on their desk, who they do it with and who it's for, roughly how big the company is, and whether they manage people or do the work themselves. The first three get opened here and picked up in later rounds.
+</what_the_whole_chat_should_uncover>
 
-<questions_to_ask>
-- Question 1 — a "multi_select": "What do you spend most of your time on?" Give 4 to 6 concrete options that are plain things a person would actually say for THIS role. Match the altitude of these:
-  * software engineer: "Writing code", "Talking to users", "Reviewing others' work", "Planning what to build", "Managing the team"
-  * nurse: "Direct patient care", "Giving medications", "Charting", "Coordinating with doctors", "Training newer nurses"
-  * line cook: "Working the line", "Prepping", "Plating and expediting", "Building the menu", "Ordering and inventory"
-- Question 2 — a "single_select", asked exactly like this: "How many people work at the company?" Options, in this order: "Just me", "2–10", "11–50", "51–200", "201–1,000", "1,000+".
-- Question 3 — a "single_select", asked exactly like this: "Do you manage other people, or do the work yourself?" Options, in this order: "I do the work myself", "I manage a team", "I do both".
-- Keep Questions 2 and 3 word-for-word as written above, with those exact options.
-
-<rules>
-- Ground Question 1's options in what someone with this title, tenure, and description plausibly does. Cover the real breadth of the week, INCLUDING the hands-on work, not only meetings and management. Only include leading, managing, hiring, budget, or strategy options when the title or tenure supports them.
-- Every option is a candidate the person taps to confirm — NEVER a stated fact. No invented tool names, employer names, clients, numbers, or results. Number ranges only for how-many / how-often questions, smallest first.
-- A "Something else…" free-text escape and a "Skip" are added to every question automatically, so do NOT add a catch-all, "Other", or "N/A" option.
-- Ask nothing the current description already states.
-
-FORBIDDEN — never produce any of these:
-- Job-posting or "responsibility area" wording as a question or option. Banned examples: "Stakeholder management", "Cross-functional collaboration", "Strategic planning", "Process optimization", "Product metrics instrumentation", "Engineering standards definition", "Operational excellence", "Partnership negotiation". If it reads like a job-posting line or a LinkedIn skill tag, rewrite it as something a person would SAY.
-- Buzzwords anywhere: spearheaded, leveraged, drove, orchestrated, synergy, results-driven.
-- Chatty or padded question wording ("Let's…", "Tell me about…", "Walk me through…"). Keep questions bare and direct.
-- Compound questions, or any question that needs a number, dollar figure, or exact date typed in to answer.
-</rules>
+<first_questions>
+1. A "multi_select" asking what takes up most of their week, with answers that fit "$jobTitle".
+2. "Roughly how many people work there?" as a "single_select" with the answers "Just me", "2–10", "11–50", "51–200", "201–1,000", "1,000+".
+3. "Do you mostly do the work yourself, or run a team?" as a "single_select" with the answers "I do the work myself", "I run a team", "A bit of both".
+</first_questions>
 
 Return only valid JSON matching the schema below. Do not wrap it in markdown fences or add comments.
 
@@ -113,27 +92,27 @@ Return only valid JSON matching the schema below. Do not wrap it in markdown fen
   "questions": [
     {
       "kind": "multi_select",
-      "question": "What do you spend most of your time on?",
-      "options": ["A real thing people say", "Another real thing", "Another", "Another"]
+      "question": "What takes up most of your week?",
+      "options": ["Writing code", "Reviewing other people's code", "Talking to customers", "Figuring out what to build", "Helping the team get unstuck"]
     },
     {
       "kind": "single_select",
-      "question": "How many people work at the company?",
+      "question": "Roughly how many people work there?",
       "options": ["Just me", "2–10", "11–50", "51–200", "201–1,000", "1,000+"]
     },
     {
       "kind": "single_select",
-      "question": "Do you manage other people, or do the work yourself?",
-      "options": ["I do the work myself", "I manage a team", "I do both"]
+      "question": "Do you mostly do the work yourself, or run a team?",
+      "options": ["I do the work myself", "I run a team", "A bit of both"]
     }
   ]
 }
 </schema>`;
 
-// Ask the model for the FIRST 2-3 dead-simple questions: a role-specific "what do
-// you spend most of your time on?" plus two universal, verbatim-pinned questions
-// (company size and IC-vs-manager) that ground every entry. High-value problems
-// and who they collaborate with are opened here and dug into by the follow-ups.
+// Ask the model for the FIRST 2-3 easy questions: a role-specific "what takes up
+// most of your week?" plus two pinned questions (company size and whether they
+// run a team) that ground every entry. Problems and collaborators are opened
+// here and picked up by the follow-ups.
 export function buildOpeningQuestionsPrompt({ position, company, description, tenure }) {
   const roleContext = position?.trim() ? position.trim() : "this role";
   const companyContext = company?.trim() ?? "";
@@ -149,8 +128,8 @@ export function buildOpeningQuestionsPrompt({ position, company, description, te
 }
 
 // Given the transcript of what the person has answered so far, ask the next 1-3
-// questions that branch off their answers — or signal "enough" to stop. Bounded by
-// round/maxRounds so the final round is told to prefer stopping.
+// questions that pick up on their answers — or signal "enough" to stop. Bounded
+// by round/maxRounds so the final round is told to prefer stopping.
 export function buildFollowupQuestionsPrompt({
   position,
   company,
@@ -174,11 +153,11 @@ About ${tenure.trim()} in the role.
 
   const isFinalRound = round >= maxRounds;
   const roundsLeftSentence = isFinalRound
-    ? 'This is the FINAL round. After this we finish up, so ask only the checklist items still missing; if all are covered, set "enough" to true.'
-    : "You can ask more in a later round, so cover the most important missing item first.";
+    ? 'This is the FINAL round. After this we write it up, so ask only what is still open; if everything is covered, set "enough" to true.'
+    : "You can ask more in a later round, so pick up the most important open thread first.";
 
   return `<task>
-Ask the next short, direct questions to learn more about what this person does as "${roleContext}"${companyContext ? ` at ${companyContext}` : ""}. Below is what they have told you so far. Either ask 1 to 3 more questions that build on their answers, or — once everything in the checklist below is covered — set "enough" to true so we can write it up.
+You're partway through a friendly, low-key chat with someone about their job as "${roleContext}"${companyContext ? ` at ${companyContext}` : ""}. Below is what they've said so far. Ask the next 1 to 3 questions that pick up on their answers, or, once the chat has covered everything in <what_we_still_want>, set "enough" to true so we can write it up.
 </task>
 
 <role_title>
@@ -197,44 +176,21 @@ ${transcriptLines}
 This is round ${round} of at most ${maxRounds}. ${roundsLeftSentence}
 </where_we_are>
 
-<question_rules>
-Write every question so a literal-minded 12-year-old could answer it without guessing what you mean.
-- One question asks about ONE thing. Never join two things with "and" or "or".
-- Short, common words. No jargon, no abbreviations, no buzzwords.
-- Say it straight. No "Let's", "Tell me about", "Walk me through", greetings, or compliments.
-- Ask about things a person DID — actions you could have watched. Not feelings, opinions, or their "role" in the abstract.
-- Each question can be read only one way. If a word is fuzzy ("impact", "ownership", "involvement"), cut it and name the concrete thing.
-- No idioms, metaphors, or sarcasm. No double negatives.
-- Every question is answerable by tapping: pick one, tap all that apply, or Yes/No.
-- Build the options out of what they ALREADY said whenever you can.
-</question_rules>
+<how_to_ask>
+Ask the way a curious friend would: one easy thing at a time, in everyday words, so they can answer from memory in a second. Pick up on something they just said, the way a real conversation does: "You said you mostly write code. Which part of the app is that?" Build the answers out of what they already told you where you can, written the way they would say them: "The checkout flow", "The stuff customers see", "The servers behind it".
+Give a pick-one or pick-many question 3 to 6 answers; use "yes_no" for a quick yes or no. The answers are offers for the person to tap, not facts about them, and they can always tap "Something else…" or "Skip", so the answers don't need to cover everything.
+</how_to_ask>
 
-<must_cover_before_stopping>
-The conversation must cover ALL THREE of these before you set "enough" to true. Read what they have already answered above, skip anything covered, and ask whatever is still missing THIS round:
-1. Their main work, dug ONE concrete layer deeper than they have said so far. Example: they said "Writing code" -> ask "Which part of the app do you build?" with options like "Front-end", "Back-end", "Full-stack", "Infrastructure".
-2. Which problems they work on — the hard or important ones, not the busywork. Ask it plainly, e.g. "Which problems do you work on?" as a "multi_select", with concrete options built from their answers.
-3. Who they work with, and who they do the work for. Ask it plainly, e.g. "Who do you work with?" as a "multi_select", with options like "Customers", "Other engineers", "A co-founder", "Another team".
-Only set "enough" to true once all three are covered. Do not stop early with any of them missing.
-</must_cover_before_stopping>
-
-<also_try>
-If it fits naturally, ask ONE gentle question about what is hardest to replace about them — e.g. "What is the part others would find hard to cover for you?" — and ALWAYS include an easy out like "Honestly, someone else could cover it", so a modest person is never pushed to overclaim. Skip it if it would feel like a stretch.
-</also_try>
-
-<instructions>
-- If all three checklist items are already covered, set "enough" to true and return "questions": [].
-- Otherwise ask 1 to 3 NEW questions that cover what is still missing. Never re-ask or reword anything already answered above, and never ask what the current description already states.
-- Kinds: "single_select", "multi_select", "yes_no". Give single/multi questions 2 to 6 short options (2 to 8 plain words each), mutually distinct. A "Something else…" free-text escape and a "Skip" are added automatically — do NOT add a catch-all, "Other", or "N/A" option.
-- Every option is a candidate the person taps to confirm — NEVER a fact. Never invent numbers, tool names, employers, clients, or outcomes. Number ranges (smallest first) only for how-many / how-often questions.
-
-FORBIDDEN — never produce any of these:
-- Job-posting or "responsibility area" wording as a question or option ("Stakeholder management", "Cross-functional collaboration", "Process optimization", "Strategic planning", "Operational excellence"). If it reads like a job-posting line or a LinkedIn skill tag, rewrite it as something a person would SAY.
-- Buzzwords: spearheaded, leveraged, drove, orchestrated, synergy, results-driven.
-- Chatty or padded question wording ("Let's…", "Tell me about…", "Walk me through…"). Keep questions bare and direct.
-- Compound questions, or any question that needs a number, dollar figure, or exact date typed in to answer.
+<what_we_still_want>
+By the end of the chat we want to know, in their own words:
+1. What they mostly do, one step more specific than they've said so far ("Writing code" becomes which part of the app).
+2. Which problems land on their desk, the hard or important ones. Something like "What are the tricky problems you end up dealing with?" as a "multi_select", with answers drawn from what they've said.
+3. Who they work with and who the work is for. Something like "Who do you spend the most time working with?" as a "multi_select".
+If it fits naturally, one easy extra: what people come to them for, like "What do people tend to come to you for?", with a comfortable out such as "Nothing in particular, we all pitch in" so a modest person has an easy answer.
+Read the conversation above, skip what's already covered, and ask what's still open this round. Set "enough" to true once 1, 2 and 3 are all covered.
+</what_we_still_want>
 
 Return only valid JSON matching the schema below. Do not wrap it in markdown fences or add comments.
-</instructions>
 
 <schema>
 {
@@ -242,13 +198,13 @@ Return only valid JSON matching the schema below. Do not wrap it in markdown fen
   "questions": [
     {
       "kind": "multi_select",
-      "question": "Which problems do you work on?",
-      "options": ["A real problem they handle", "Another", "Another", "Another"]
+      "question": "What are the tricky problems you end up dealing with?",
+      "options": ["Keeping the site fast when traffic spikes", "Bugs customers report", "Figuring out what to build next", "Getting new teammates up to speed"]
     },
     {
       "kind": "multi_select",
-      "question": "Who do you work with?",
-      "options": ["Customers", "Other engineers", "A co-founder", "Another team"]
+      "question": "Who do you spend the most time working with?",
+      "options": ["Customers", "Other engineers", "The founders", "The support team"]
     }
   ]
 }
