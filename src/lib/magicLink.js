@@ -32,6 +32,26 @@ export function readVerification(searchLike) {
   return { tokenHash, type };
 }
 
+// The hosts the emailed link points at. Sign-in emails always link here
+// (the template uses Supabase's Site URL), so anywhere else — a Vercel preview,
+// localhost — needs the pasted-link fallback below.
+const PRODUCTION_HOSTS = new Set(["www.1resume.app", "1resume.app"]);
+
+export function isProductionHost(hostname) {
+  return PRODUCTION_HOSTS.has(String(hostname ?? "").toLowerCase());
+}
+
+// Reads the credential out of a sign-in link pasted from the email, so a
+// preview or local build can sign in with a link that points at production.
+// Tolerates whatever a copy picks up: surrounding text, a link copied from the
+// email's HTML source (&amp;), or the legacy /auth/callback form.
+export function readVerificationFromLink(text) {
+  const raw = String(text ?? "").replace(/&amp;/g, "&").trim();
+  const query = raw.match(/[?&](token_hash=[^\s"'<>]*)/)?.[0];
+  if (!query) return null;
+  return readVerification(query.slice(1).replace(/[).,;]+$/, ""));
+}
+
 // Strips the one-time credential from a query string, preserving everything
 // else. Used to clean the address bar the moment the token has been read, so a
 // refresh doesn't replay a spent token and the hash never leaks through a
