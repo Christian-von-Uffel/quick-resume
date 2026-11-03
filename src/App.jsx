@@ -117,7 +117,28 @@ import { PipelineSteps } from "./components/PipelineSteps";
 import { SkillsChecklist } from "./components/SkillsChecklist";
 import { GapRow, LongestGapBanner } from "./components/GapNotice";
 import Onboarding from "./components/Onboarding";
-import { importResume, coerceImportedProfile, needsMistralOcr, resolveImportMimeType } from "./lib/importResume";
+import {
+  importResume,
+  coerceImportedProfile,
+  needsMistralOcr,
+  resolveImportMimeType,
+  isImportableResumeFile,
+} from "./lib/importResume";
+import {
+  runImportBatch,
+  mergeBatchWorkHistory,
+  pickProfileUpdates,
+  applyProfileUpdates,
+  resumeRecency,
+} from "./lib/importBatch";
+import {
+  ResumeFilePicker,
+  WorkHistoryEmptyState,
+  ResumeImportProgress,
+  ResumeImportSummary,
+  ResumeDropOverlay,
+  useResumeFileDrop,
+} from "./components/ResumeImport";
 import {
   buildMissingExperienceReviewPrompt,
   validateMissingExperienceReview,
@@ -251,7 +272,10 @@ export default function App({ initialData = null, userId = null }) {
   const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
   const [deleteAccountConfirmText, setDeleteAccountConfirmText] = useState("");
   const [profileDataToast, setProfileDataToast] = useState("");
-  const [importStatus, setImportStatus] = useState("");
+  // A running batch reports { index, total, file, phase }; the finished one
+  // leaves a summary (lib/importBatch) until it is dismissed or replaced.
+  const [importProgress, setImportProgress] = useState(null);
+  const [importSummary, setImportSummary] = useState(null);
   const [generateStatus, setGenerateStatus] = useState("");
   // Whether generateStatus holds a failure (styled as an error) rather than
   // progress, so a failed run can't be mistaken for one that's still working.
@@ -446,10 +470,13 @@ export default function App({ initialData = null, userId = null }) {
 
   // Suspected duplicate/overlapping/dually-held positions, minus the pairs the
   // person already confirmed as intentional (profile.conflictAcks). Reviewing
-  // them is optional: a quiet prompt above the timeline opens the dialog.
+  // them is optional: a quiet prompt above the timeline opens the dialog. Held
+  // back while a multi-resume import runs, so the review covers the whole batch
+  // once at the end instead of flickering in after each file.
   const workConflicts = useMemo(
-    () => detectPositionConflicts(workHistory, { ackKeys: profile.conflictAcks ?? [] }),
-    [workHistory, profile.conflictAcks]
+    () =>
+      isImporting ? [] : detectPositionConflicts(workHistory, { ackKeys: profile.conflictAcks ?? [] }),
+    [workHistory, profile.conflictAcks, isImporting]
   );
 
   // Plain-language reasons an action is gated, surfaced as inline hints + tooltips
@@ -1757,89 +1784,121 @@ export default function App({ initialData = null, userId = null }) {
     }
   };
 
-  const handleImportResume = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  // Import one or more past resumes. Files are read one at a time and each
+  // merges into the profile as soon as it is extracted, so a usage cap or a bad
+  // file partway through keeps everything before it. lib/importBatch owns the
+  // order, the limit handling and the summary; this supplies the model calls.
+  const handleImportResume = async (files) => {
+    if (isImporting || !files?.length) return;
 
     setIsImporting(true);
-    setImportStatus("Reading resume file...");
+    setImportSummary(null);
 
-    // Minted up front so the OCR and extraction calls both record their cost
-    // against this one import.
-    const importId = newMetricId();
-    const fileType = resolveImportMimeType(file);
+    // One importId per file, minted on its first attempt and reused if a burst
+    // pause retries it, so OCR and extraction meter as one import. OCR text is
+    // kept too, so a retry doesn't pay for the conversion twice.
+    const attempts = new Map();
+    // A running copy of the history to count added vs matched roles against;
+    // state itself is updated through functional setters so edits made while
+    // the batch runs aren't overwritten.
+    let runningHistory = workHistory;
+    let claimedFields = {};
 
-    try {
-      const base64 = await readFileAsBase64(file);
-      const importFile = {
-        name: file.name,
-        mimeType: fileType,
-        base64,
-      };
-
-      // Word/PowerPoint/OpenDocument files can't be sent to the chat providers
-      // directly; Mistral OCR turns them into markdown first, and the selected
-      // model then extracts from that text instead of the file.
-      let ocrText = null;
-      if (needsMistralOcr(file)) {
-        setImportStatus("Converting the file to text with Mistral OCR...");
-        ocrText = await callMistralOcr(importFile, { runId: importId });
-      }
-
-      setImportStatus("Asking the model to extract profile and work history...");
-      const imported = await callLlmForJson(
-        llmSettings,
-        importResume(ocrText),
-        ocrText ? null : importFile,
-        { runId: importId, feature: "resume_import" }
-      );
-      const importedProfile = coerceImportedProfile(imported.profile);
-      const importedHistory = normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem);
-
-      setProfile((current) => {
-        const nextProfile = {
-          ...current,
-          ...Object.fromEntries(
-            Object.entries(importedProfile)
-              .filter(([key, value]) => key !== "education" && value)
-          ),
-        };
-        if (Array.isArray(importedProfile.education)) {
-          nextProfile.education = mergeEducation(current.education ?? [], importedProfile.education);
+    const summary = await runImportBatch(files, {
+      onProgress: setImportProgress,
+      extract: async (file, index) => {
+        if (!isImportableResumeFile(file)) {
+          throw new Error("Not a file type we can read. Use PDF, Word, PowerPoint, OpenDocument or an image.");
         }
-        return nextProfile;
-      });
-      // Entries matching an existing position's title + company + dates (typo-
-      // tolerant) fold in automatically instead of piling up as duplicates.
-      setWorkHistory((current) => mergeImportedWorkHistory(current, importedHistory).merged);
-      const { merged, mergedCount } = mergeImportedWorkHistory(workHistory, importedHistory);
-      const mergedNote =
-        mergedCount > 0
-          ? ` ${mergedCount} duplicate${mergedCount === 1 ? " was" : "s were"} merged automatically.`
-          : "";
-      setImportStatus(
-        `Imported ${importedHistory.length} role${importedHistory.length === 1 ? "" : "s"} from ${file.name}.${mergedNote}`
-      );
+        let attempt = attempts.get(index);
+        if (!attempt) {
+          attempt = { importId: newMetricId(), fileType: resolveImportMimeType(file), ocrText: null };
+          attempts.set(index, attempt);
+        }
 
-      // roles_found is what the model returned; roles_added is what actually
-      // landed. They differ — empty entries are dropped and duplicates fold
-      // into existing roles — and the gap is worth seeing.
+        const importFile = {
+          name: file.name,
+          mimeType: attempt.fileType,
+          base64: await readFileAsBase64(file),
+        };
+
+        // Word/PowerPoint/OpenDocument files can't be sent to the chat providers
+        // directly; Mistral OCR turns them into markdown first, and the selected
+        // model then extracts from that text instead of the file.
+        if (needsMistralOcr(file) && attempt.ocrText === null) {
+          attempt.ocrText = await callMistralOcr(importFile, { runId: attempt.importId });
+        }
+
+        const imported = await callLlmForJson(
+          llmSettings,
+          importResume(attempt.ocrText),
+          attempt.ocrText ? null : importFile,
+          { runId: attempt.importId, feature: "resume_import" }
+        );
+        return {
+          profile: coerceImportedProfile(imported.profile),
+          workHistory: normalizeStoredList(imported.workHistory, []).map(normalizeWorkHistoryItem),
+        };
+      },
+      apply: (extraction, file, index) => {
+        const { importId, fileType, ocrText } = attempts.get(index);
+        const { workHistory: nextHistory, added, matched } = mergeBatchWorkHistory(
+          runningHistory,
+          extraction.workHistory
+        );
+        runningHistory = nextHistory;
+
+        // Contact details from the most recent resume in the batch win, so an
+        // older file read later doesn't bring back an old phone number.
+        const { fields, claimed } = pickProfileUpdates(
+          extraction.profile,
+          resumeRecency(extraction.workHistory),
+          claimedFields
+        );
+        claimedFields = claimed;
+
+        setProfile((current) => applyProfileUpdates(current, fields, extraction.profile.education));
+        // Entries matching an existing position's title + company + dates (typo-
+        // tolerant) fold in automatically instead of piling up as duplicates.
+        setWorkHistory((current) => mergeImportedWorkHistory(current, extraction.workHistory).merged);
+
+        // roles_found is what the model returned; roles_added is what actually
+        // landed. They differ — empty entries are dropped and duplicates fold
+        // into existing roles — and the gap is worth seeing.
+        recordResumeImport({
+          id: importId,
+          fileType,
+          usedOcr: ocrText !== null,
+          rolesFound: extraction.workHistory.length,
+          rolesAdded: added,
+          succeeded: true,
+        });
+        return { added, matched };
+      },
+    });
+
+    // Files that were sent and failed; unsupported and never-sent files have no
+    // attempt and nothing to record.
+    for (const result of summary.files) {
+      const attempt = attempts.get(result.index);
+      if (result.status !== "failed" || !attempt) continue;
       recordResumeImport({
-        id: importId,
-        fileType,
-        usedOcr: ocrText !== null,
-        rolesFound: importedHistory.length,
-        rolesAdded: Math.max(0, merged.length - workHistory.length),
-        succeeded: true,
+        id: attempt.importId,
+        fileType: attempt.fileType,
+        usedOcr: needsMistralOcr(files[result.index]),
+        succeeded: false,
       });
-    } catch (error) {
-      setImportStatus(error instanceof Error ? error.message : "Import failed.");
-      recordResumeImport({ id: importId, fileType, usedOcr: needsMistralOcr(file), succeeded: false });
-    } finally {
-      setIsImporting(false);
-      event.target.value = "";
     }
+
+    setImportProgress(null);
+    setImportSummary(summary);
+    setIsImporting(false);
   };
+
+  const isDraggingResumes = useResumeFileDrop(
+    activeMainTab === "workHistory" && !isImporting,
+    handleImportResume
+  );
 
   // Same checkout hand-off the trial gate uses, reached from inside the editor
   // by someone who just ran out of trial resumes.
@@ -2163,7 +2222,7 @@ export default function App({ initialData = null, userId = null }) {
 
         {/* ── Work history ────────────────────────────── */}
         <div className={`flex-1 min-w-0 self-stretch flex-col min-h-0 ${activeMainTab === "workHistory" ? "flex" : "hidden"}`}>
-          <div className={`px-4 py-3 border-b border-neutral-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${openWorkItem ? "max-sm:hidden" : ""}`}>
+          <div className={`px-4 py-3 border-b border-neutral-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${openWorkItem || (sortedWorkHistory.length === 0 && !isImporting) ? "max-sm:hidden" : ""}`}>
             <div className="hidden sm:block">
               <p className="text-xs text-neutral-500 uppercase tracking-widest">
                 Work History
@@ -2172,25 +2231,25 @@ export default function App({ initialData = null, userId = null }) {
                 Reusable roles available to every generated resume.
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <label className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20">
-                <input
-                  type="file"
-                  accept="application/pdf,image/*,.doc,.docx,.ppt,.pptx,.odt,.odp"
-                  onChange={handleImportResume}
+            {/* An empty history shows its own upload-first empty state below. */}
+            {(sortedWorkHistory.length > 0 || isImporting) && (
+              <div className="flex shrink-0 items-center gap-2">
+                <ResumeFilePicker
+                  onFiles={handleImportResume}
                   disabled={isImporting}
-                  className="sr-only"
-                />
-                {isImporting ? "Importing..." : "Import Resume"}
-              </label>
-              <button
-                type="button"
-                onClick={handleAddWorkHistory}
-                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
-              >
-                Add Position
-              </button>
-            </div>
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20"
+                >
+                  {isImporting ? "Importing..." : "Import Resumes"}
+                </ResumeFilePicker>
+                <button
+                  type="button"
+                  onClick={handleAddWorkHistory}
+                  className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+                >
+                  Add Position
+                </button>
+              </div>
+            )}
           </div>
 
           {sortedWorkHistory.length > 0 && (
@@ -2224,15 +2283,25 @@ export default function App({ initialData = null, userId = null }) {
                 />
               </div>
             )}
-            {importStatus && (
-              <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4 text-sm text-neutral-400">
-                {importStatus}
-              </div>
+            <ResumeImportProgress progress={importProgress} />
+            {!isImporting && (
+              <ResumeImportSummary
+                summary={importSummary}
+                conflictCount={workConflicts.length}
+                onReview={() => setIsPositionReviewOpen(true)}
+                onSubscribe={handleSubscribeFromLimit}
+                subscribing={openingCheckout}
+                onDismiss={() => setImportSummary(null)}
+              />
             )}
             {sortedWorkHistory.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-neutral-700 p-4 text-sm text-neutral-500">
-                Add every role you want available for this resume.
-              </div>
+              !isImporting && (
+                <WorkHistoryEmptyState
+                  onFiles={handleImportResume}
+                  onAddPosition={handleAddWorkHistory}
+                  disabled={isImporting}
+                />
+              )
             ) : visibleWorkHistory.length === 0 ? (
               <div className="rounded-xl border border-dashed border-neutral-700 p-4 text-sm text-neutral-500">
                 No positions match that search.
@@ -3664,6 +3733,8 @@ export default function App({ initialData = null, userId = null }) {
           {workHistorySaveToast || profileDataToast}
         </div>
       )}
+
+      <ResumeDropOverlay active={isDraggingResumes} />
 
       {isPositionReviewOpen && (
         <PositionReviewDialog

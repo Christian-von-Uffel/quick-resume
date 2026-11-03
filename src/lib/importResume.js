@@ -15,18 +15,42 @@ const OCR_ONLY_MIME_TYPES_BY_EXTENSION = {
 
 const OCR_ONLY_MIME_TYPES = new Set(Object.values(OCR_ONLY_MIME_TYPES_BY_EXTENSION));
 
+// PDF and images the providers read directly, for the same empty-type fallback.
+const NATIVE_MIME_TYPES_BY_EXTENSION = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
 // Browsers report an empty MIME type for files whose format the platform
 // doesn't recognize (common for Office files on machines without Office), so
 // fall back to the extension before giving up.
 export function resolveImportMimeType(file) {
   if (file.type) return file.type;
   const extension = /\.([a-z0-9]+)$/i.exec(file.name ?? "")?.[1]?.toLowerCase();
-  return OCR_ONLY_MIME_TYPES_BY_EXTENSION[extension] ?? "application/octet-stream";
+  return (
+    OCR_ONLY_MIME_TYPES_BY_EXTENSION[extension] ??
+    NATIVE_MIME_TYPES_BY_EXTENSION[extension] ??
+    "application/octet-stream"
+  );
 }
 
 export function needsMistralOcr(file) {
   if (!file) return false;
   return OCR_ONLY_MIME_TYPES.has(resolveImportMimeType(file));
+}
+
+// The file picker's accept list. Dropped files skip the picker's filter, so
+// isImportableResumeFile applies the same rule to them.
+export const RESUME_IMPORT_ACCEPT = "application/pdf,image/*,.doc,.docx,.ppt,.pptx,.odt,.odp";
+
+export function isImportableResumeFile(file) {
+  if (!file) return false;
+  const type = resolveImportMimeType(file);
+  return type === "application/pdf" || type.startsWith("image/") || OCR_ONLY_MIME_TYPES.has(type);
 }
 
 export function importResume(resumeText) {
