@@ -121,18 +121,25 @@ describe("getPreferredLlmProvider", () => {
     vi.unstubAllEnvs();
   });
 
-  it("prefers xAI when its key is set, even if Gemini is also set", () => {
+  it("prefers OpenAI when its key is set, even if xAI is also set", () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("XAI_API_KEY", "xai-key");
+    expect(getPreferredLlmProvider()).toBe("openai");
+  });
+
+  it("prefers xAI when OpenAI has no key, even if Gemini is set", () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
     vi.stubEnv("XAI_API_KEY", "xai-key");
     vi.stubEnv("GEMINI_API_KEY", "gemini-key");
     expect(getPreferredLlmProvider()).toBe("xai");
   });
 
-  it("falls through xAI → Anthropic → OpenAI → Google", () => {
+  it("falls through OpenAI → xAI → Anthropic → Google", () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
     vi.stubEnv("XAI_API_KEY", "");
-    vi.stubEnv("ANTHROPIC_API_KEY", "");
-    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("ANTHROPIC_API_KEY", "anthropic-key");
     vi.stubEnv("GEMINI_API_KEY", "gemini-key");
-    expect(getPreferredLlmProvider()).toBe("openai");
+    expect(getPreferredLlmProvider()).toBe("anthropic");
   });
 
   it("uses Google when no higher-priority key is set", () => {
