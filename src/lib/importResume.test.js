@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { importResume, needsMistralOcr, resolveImportMimeType } from "./importResume";
+import { importResume, isImportableResumeFile, needsMistralOcr, resolveImportMimeType } from "./importResume";
 
 describe("needsMistralOcr", () => {
   it("routes Office and OpenDocument files through OCR", () => {
@@ -51,5 +51,21 @@ describe("importResume", () => {
     const prompt = importResume("# Jane Doe\nSenior Engineer");
     expect(prompt).toContain("<resume_text>\n# Jane Doe\nSenior Engineer\n</resume_text>");
     expect(prompt).toContain("the resume text below");
+  });
+});
+
+describe("isImportableResumeFile", () => {
+  it("accepts what the file picker accepts", () => {
+    expect(isImportableResumeFile({ name: "cv.pdf", type: "application/pdf" })).toBe(true);
+    expect(isImportableResumeFile({ name: "scan.jpg", type: "image/jpeg" })).toBe(true);
+    expect(isImportableResumeFile({ name: "cv.docx", type: "" })).toBe(true);
+    expect(isImportableResumeFile({ name: "deck.pptx", type: "" })).toBe(true);
+    expect(isImportableResumeFile({ name: "cv.PDF", type: "" })).toBe(true);
+  });
+
+  it("rejects dropped files the picker would have filtered out", () => {
+    expect(isImportableResumeFile({ name: "notes.txt", type: "text/plain" })).toBe(false);
+    expect(isImportableResumeFile({ name: "archive.zip", type: "" })).toBe(false);
+    expect(isImportableResumeFile(null)).toBe(false);
   });
 });
