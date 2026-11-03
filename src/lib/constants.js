@@ -27,9 +27,9 @@ export const MAX_AUTO_PAGES = 2;
 // Gap between stacked pages in the preview, in unscaled page pixels.
 export const PAGE_GAP = 24;
 export const PROFILE_EXPORT_VERSION = 1;
-export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
-export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
 export const DEFAULT_XAI_MODEL = "grok-4.5";
 export const MISTRAL_OCR_MODEL = "mistral-ocr-latest";
 
@@ -54,14 +54,15 @@ export const XAI_MODEL_OPTIONS = [
 
 export const FALLBACK_MODEL_OPTIONS = {
   gemini: [
+    ["gemini-3.8-flash", "gemini-3.8-flash"],
     ["gemini-3.5-flash", "gemini-3.5-flash"],
     ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
     ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite"],
   ],
   openai: OPENAI_MODEL_OPTIONS,
   anthropic: [
-    ["claude-fable-5", "claude-fable-5"],
-    ["claude-opus-4-8", "claude-opus-4-8"],
+    ["claude-opus-5", "claude-opus-5"],
+    ["claude-sonnet-5", "claude-sonnet-5"],
     ["claude-sonnet-4-6", "claude-sonnet-4-6"],
     ["claude-haiku-4-5", "claude-haiku-4-5"],
   ],

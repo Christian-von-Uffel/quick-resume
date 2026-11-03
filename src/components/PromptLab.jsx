@@ -41,6 +41,10 @@ import {
   GENERATE_STEPS,
   buildJobAnalysisPrompt,
   composeResume,
+  checkComposedResume,
+  repairComposedResumePrompt,
+  resumeHeadline,
+  stripCodeFence,
   ensureRequiredRolesSelected,
   selectRankedEvidence,
   validateJobAnalysis,
@@ -1636,12 +1640,20 @@ function GenerateColumn({
         text = await callLlm(settings, composePrompt, null, { runId, feature: "lab" });
         if (!stillCurrent()) return;
         log({ label: "3 · Compose the resume", prompt: composePrompt, response: text });
+
+        // Same compile-against-the-format check as src/App.jsx; the repair is
+        // logged as its own step so a column that needed one says so.
+        const headline = resumeHeadline({ selectedEvidence, jobAnalysis });
+        const problems = checkComposedResume(stripCodeFence(text), { targetTitle: jobAnalysis.position, headline });
+        if (problems.length) {
+          const repairPrompt = repairComposedResumePrompt({ profile, markdown: stripCodeFence(text), problems, headline });
+          text = await callLlm(settings, repairPrompt, null, { runId, feature: "lab", purpose: "repair", attributePrompt: composePrompt });
+          if (!stillCurrent()) return;
+          log({ label: "3b · Repair the format", prompt: repairPrompt, response: text });
+        }
       }
 
-      const markdown = text
-        .replace(/^```(?:markdown)?\s*/i, "")
-        .replace(/```$/i, "")
-        .trim();
+      const markdown = stripCodeFence(text);
       setState({ status: "ready", stepIndex: -1, failed: false, markdown, error: "" });
     } catch (error) {
       if (!stillCurrent()) return;

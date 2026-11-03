@@ -5,6 +5,7 @@ import {
   MAX_MISSING_EXPERIENCE_ITEMS,
   buildMissingExperienceReviewPrompt,
   validateMissingExperienceReview,
+  groundSuggestedAnswer,
   MAX_COVERED_SKILLS,
   validateCoveredSkills,
   buildSkillsChecklist,
@@ -34,6 +35,12 @@ describe("buildMissingExperienceReviewPrompt", () => {
     expect(prompt).toMatch(/VERBATIM from the work history/i);
     expect(prompt).toMatch(/PLAUSIBLY involved/i);
     expect(prompt).toMatch(/candidates for the person to confirm, NOT facts/i);
+  });
+
+  it("asks for a suggested answer that quotes the role's own description", () => {
+    expect(prompt).toContain('"basedOn"');
+    expect(prompt).toContain('"suggestedAnswer"');
+    expect(prompt).toMatch(/copied VERBATIM from that role's description/i);
   });
 
   it("embeds the work history and job description", () => {
@@ -72,7 +79,48 @@ describe("validateMissingExperienceReview", () => {
     expect(result[0].id).toBe("missing-0");
     expect(result[0].kind).toBe("communication");
     expect(result[0].likelyRoles).toEqual([
-      { workId: "w1", label: "Senior Product Manager at Beta Inc", why: "Model work implies readouts." },
+      {
+        workId: "w1",
+        label: "Senior Product Manager at Beta Inc",
+        why: "Model work implies readouts.",
+        suggestedAnswer: "",
+        basedOn: "",
+      },
+    ]);
+  });
+
+  it("keeps a suggested answer only when its quote is really in that role's description", () => {
+    const result = validateMissingExperienceReview(
+      {
+        missingExperienceDetails: [
+          {
+            skill: "Executive communication",
+            question: "When you built churn models at Beta Inc, did you present the results to executives?",
+            likelyRoles: [
+              {
+                position: "Senior Product Manager",
+                company: "Beta Inc",
+                why: "Model work implies readouts.",
+                basedOn: "built churn model",
+                suggestedAnswer: "Yes, I built the churn model and walked executives through its results.",
+              },
+              {
+                position: "Business Analyst",
+                company: "Gamma LLC",
+                why: "Reporting implies readouts.",
+                basedOn: "presented to the board",
+                suggestedAnswer: "Yes, I presented reports to the board.",
+              },
+            ],
+          },
+        ],
+      },
+      workHistory
+    );
+
+    expect(result[0].likelyRoles.map((role) => [role.workId, role.suggestedAnswer, role.basedOn])).toEqual([
+      ["w1", "Yes, I built the churn model and walked executives through its results.", "built churn model"],
+      ["w2", "", ""],
     ]);
   });
 
@@ -124,7 +172,7 @@ describe("validateMissingExperienceReview", () => {
     );
 
     expect(result[0].likelyRoles).toEqual([
-      { workId: "w2", label: "Business Analyst at Gamma LLC", why: "case-insensitive match" },
+      { workId: "w2", label: "Business Analyst at Gamma LLC", why: "case-insensitive match", suggestedAnswer: "", basedOn: "" },
     ]);
   });
 
@@ -146,6 +194,43 @@ describe("validateMissingExperienceReview", () => {
     const result = validateMissingExperienceReview({ missingExperienceDetails: details }, workHistory);
     expect(result).toHaveLength(MAX_MISSING_EXPERIENCE_ITEMS);
     expect(result.filter((d) => d.skill.toLowerCase() === "sql")).toHaveLength(1);
+  });
+});
+
+describe("groundSuggestedAnswer", () => {
+  const description = "- Cleaned product data from 200+ sites\n- Loaded it into one normalized schema";
+
+  it("keeps a suggestion whose quote appears in the description, ignoring case and wrapping", () => {
+    expect(
+      groundSuggestedAnswer(
+        { basedOn: "cleaned product  data from 200+ sites", suggestedAnswer: "Yes, I built jobs that cleaned product data from 200+ sites." },
+        description
+      )
+    ).toEqual({
+      basedOn: "cleaned product data from 200+ sites",
+      suggestedAnswer: "Yes, I built jobs that cleaned product data from 200+ sites.",
+    });
+  });
+
+  it("drops a suggestion whose quote is not in the description", () => {
+    expect(
+      groundSuggestedAnswer({ basedOn: "ran nightly ETL", suggestedAnswer: "Yes, I ran nightly ETL." }, description)
+    ).toEqual({ suggestedAnswer: "", basedOn: "" });
+  });
+
+  it("drops a suggestion that introduces a number the description never gives", () => {
+    expect(
+      groundSuggestedAnswer(
+        { basedOn: "normalized schema", suggestedAnswer: "Yes, I loaded 5,000 products a day into the normalized schema." },
+        description
+      )
+    ).toEqual({ suggestedAnswer: "", basedOn: "" });
+  });
+
+  it("drops a suggestion with no quote, no text, or no description to check against", () => {
+    expect(groundSuggestedAnswer({ basedOn: "", suggestedAnswer: "Yes, I did." }, description)).toEqual({ suggestedAnswer: "", basedOn: "" });
+    expect(groundSuggestedAnswer({ basedOn: "normalized schema", suggestedAnswer: "" }, description)).toEqual({ suggestedAnswer: "", basedOn: "" });
+    expect(groundSuggestedAnswer({ basedOn: "normalized schema", suggestedAnswer: "Yes, I did." }, "")).toEqual({ suggestedAnswer: "", basedOn: "" });
   });
 });
 

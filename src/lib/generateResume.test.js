@@ -7,6 +7,11 @@ import {
   validateSelectedResumeEvidence,
   ensureRequiredRolesSelected,
   composeResume,
+  checkComposedResume,
+  stripCodeFence,
+  splitSummarySentences,
+  repairComposedResumePrompt,
+  resumeHeadline,
 } from "./generateResume";
 
 const jobAnalysis = {
@@ -290,12 +295,37 @@ describe("composeResume", () => {
     coverage: null,
   });
 
-  it("forbids presenting the target job title as the candidate's identity", () => {
-    expect(prompt).toMatch(/NEVER use the target job's title/i);
-    expect(prompt).toMatch(/HAS ACTUALLY BEEN/);
-    // The summary must argue fit via responsibilities, not a claimed identity.
-    expect(prompt).toMatch(/Never open with the target job title/i);
-    expect(prompt).toMatch(/argue fit through the job's key responsibilities/i);
+  it("heads the resume with the target position when a strong-fit role backs it", () => {
+    expect(prompt).toContain("# Sam Jones\nData Scientist\n");
+    expect(prompt).toMatch(/The title line is the target position "Data Scientist"/);
+    expect(prompt).toMatch(/summary's first sentence then states what the candidate has actually been/);
+  });
+
+  it("falls back to the candidate's real title when no role is a strong fit", () => {
+    const supportingOnly = composeResume({
+      profile,
+      selectedEvidence: {
+        ...selectedEvidence,
+        selectedWorkHistory: selectedEvidence.selectedWorkHistory.map((role) => ({ ...role, fit: "supporting" })),
+      },
+      jobAnalysis,
+      instructions: "Full job description text.",
+      coverage: null,
+    });
+    expect(supportingOnly).toContain("[Professional title — see title instructions]");
+    expect(supportingOnly).toMatch(/The title line states what the candidate has actually been/);
+    expect(supportingOnly).toContain('saved headline "Product Manager"');
+  });
+
+  it("frames the summary as a fill-in schema of named, single-idea sentences", () => {
+    // The format block carries the summary's shape; the instructions say how
+    // to fill it in positive terms, and checkComposedResume enforces it.
+    expect(prompt).toMatch(/3-5 sentences on one line: "<Real title> at <employer or product> who <specific thing done>/);
+    expect(prompt).toMatch(/Sentence 1 states the candidate's real professional identity/);
+    expect(prompt).toMatch(/Every sentence restates a bullet "text" field/);
+    expect(prompt).toMatch(/"supports" tags and job_requirements describe the JOB/);
+    expect(prompt).toMatch(/argues fit through the job's key responsibilities/i);
+    expect(prompt).toMatch(/Return only markdown\. Use the exact heading style/);
   });
 
   it("instructs the composer to keep the pre-ranked bullet order", () => {
@@ -325,5 +355,131 @@ describe("composeResume", () => {
     });
     expect(withCoverage).toMatch(/Do not drop roles that cover employment gaps/i);
     expect(prompt).not.toMatch(/Do not drop roles that cover employment gaps/i);
+  });
+});
+
+describe("resumeHeadline", () => {
+  const strong = { selectedWorkHistory: [{ fit: "supporting" }, { fit: "strong" }] };
+
+  it("uses the target position when a selected role is a strong fit", () => {
+    expect(resumeHeadline({ selectedEvidence: strong, jobAnalysis })).toBe("Data Scientist");
+  });
+
+  it("drops parenthetical noise from the posting's title", () => {
+    const posting = { ...jobAnalysis, position: "Senior Data Scientist (Remote)  (m/w/d)" };
+    expect(resumeHeadline({ selectedEvidence: strong, jobAnalysis: posting })).toBe("Senior Data Scientist");
+  });
+
+  it("returns nothing without a strong-fit role or a target position", () => {
+    const weak = { selectedWorkHistory: [{ fit: "supporting" }, { fit: "timeline-only" }] };
+    expect(resumeHeadline({ selectedEvidence: weak, jobAnalysis })).toBe("");
+    expect(resumeHeadline({ selectedEvidence: strong, jobAnalysis: { ...jobAnalysis, position: "" } })).toBe("");
+    expect(resumeHeadline({ selectedEvidence: null, jobAnalysis: null })).toBe("");
+  });
+});
+
+describe("checkComposedResume", () => {
+  const good = `# Jane Doe
+Senior Analyst — Forecasting
+jane@example.com
+
+---
+
+Senior analyst at Beta Inc who built the churn model that cut voluntary attrition by 12%. Led forecasting for a 40-person operations team at Beta Inc. Designed the weekly KPI review used by three departments. Taught a SQL course for 60 analysts at Gamma Co.
+
+## EXPERIENCE
+
+### Senior Analyst — Beta Inc
+January 2020 — Present
+- Built churn model
+
+## EDUCATION
+
+### BS, Statistics — State University
+2015
+
+## SKILLS
+
+Python · SQL`;
+
+  it("accepts a document that fills the format", () => {
+    expect(checkComposedResume(good)).toEqual([]);
+    expect(checkComposedResume(good, { targetTitle: "Data Scientist" })).toEqual([]);
+  });
+
+  it("strips a code fence of any language before checking", () => {
+    expect(checkComposedResume("```markdown\n" + good + "\n```")).toEqual([]);
+    expect(stripCodeFence("```html\n<p>x</p>\n```")).toBe("<p>x</p>");
+    expect(stripCodeFence(good)).toBe(good);
+  });
+
+  it("rejects a full HTML page as a structure failure", () => {
+    // grok-4.5 occasionally answers the compose prompt with a rendered page.
+    const html = "```html\n<!DOCTYPE html>\n<html><head><title>Jane Doe — Resume</title></head><body><h1>Jane Doe</h1></body></html>\n```";
+    const problems = checkComposedResume(html);
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.every((problem) => problem.severity === "structure")).toBe(true);
+  });
+
+  it("flags a run-on summary sentence", () => {
+    const runOn = good.replace(
+      "Senior analyst at Beta Inc who built the churn model that cut voluntary attrition by 12%.",
+      "Senior analyst at Beta Inc who built the churn model that cut voluntary attrition by 12% while also leading forecasting for a 40-person operations team and designing the weekly KPI review used by three departments across the company."
+    );
+    const problems = checkComposedResume(runOn);
+    expect(problems.map((problem) => problem.severity)).toEqual(["summary"]);
+    expect(problems[0].message).toMatch(/runs \d+ words/);
+  });
+
+  it("flags summaries outside 3-5 sentences, first-person voice, and a target-title opener", () => {
+    const two = good.replace(" Designed the weekly KPI review used by three departments. Taught a SQL course for 60 analysts at Gamma Co.", "");
+    expect(checkComposedResume(two).map((problem) => problem.message)).toEqual([expect.stringMatching(/has 2 sentence/)]);
+
+    const firstPerson = good.replace("Led forecasting", "I led forecasting");
+    expect(checkComposedResume(firstPerson).map((problem) => problem.message)).toEqual([expect.stringMatching(/first-person/)]);
+    // "our database" gets copied from stored bullets written in company voice.
+    const plural = good.replace("the churn model", "our churn model");
+    expect(checkComposedResume(plural).map((problem) => problem.message)).toEqual([expect.stringMatching(/first-person/)]);
+
+    const titled = good.replace("Senior analyst at Beta Inc who built", "Data Scientist at Beta Inc who built");
+    expect(checkComposedResume(titled, { targetTitle: "Data Scientist" }).map((problem) => problem.message)).toEqual([
+      expect.stringMatching(/opens with the target job title "Data Scientist"/),
+    ]);
+  });
+
+  it("flags a title line that drifted from the headline", () => {
+    expect(checkComposedResume(good, { headline: "senior analyst — forecasting" })).toEqual([]);
+    expect(checkComposedResume(good, { headline: "Data Scientist" })).toEqual([
+      { severity: "title", message: 'Line 2 must be the target position "Data Scientist".' },
+    ]);
+  });
+
+  it("reports a missing summary as a structure failure", () => {
+    const noSummary = good.replace(/---\n\n[\s\S]*?\n\n## EXPERIENCE/, "---\n\n## EXPERIENCE");
+    expect(checkComposedResume(noSummary).map((problem) => problem.severity)).toContain("structure");
+  });
+
+  it("splits sentences on terminal punctuation without breaking domains or metrics", () => {
+    expect(
+      splitSummarySentences("Built UseStackWise.com tooling for $8,000+/month clients. Raised sales 15%. Taught a course.")
+    ).toEqual(["Built UseStackWise.com tooling for $8,000+/month clients.", "Raised sales 15%.", "Taught a course."]);
+  });
+});
+
+describe("repairComposedResumePrompt", () => {
+  it("hands back the problems, the format schema, and the off-format document", () => {
+    const repair = repairComposedResumePrompt({
+      profile,
+      markdown: "<html>",
+      problems: [{ severity: "structure", message: "Line 1 must be the name." }],
+    });
+    expect(repair).toContain("- Line 1 must be the name.");
+    expect(repair).toContain("<Real title> at <employer or product> who <specific thing done>");
+    expect(repair).toContain("<resume>\n<html>\n</resume>");
+  });
+
+  it("fills the headline into the format it hands back", () => {
+    const repair = repairComposedResumePrompt({ profile, markdown: "x", problems: [], headline: "Data Scientist" });
+    expect(repair).toContain("# Sam Jones\nData Scientist\n");
   });
 });

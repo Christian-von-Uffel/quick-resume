@@ -219,14 +219,15 @@ describe("buildOpeningQuestionsPrompt", () => {
     expect(withoutTenure).not.toContain("<tenure>");
   });
 
-  it("marks an empty description and keeps the grounding + anti-wordslop guardrails", () => {
+  it("marks an empty description and sets the friendly-chat register with the pinned questions", () => {
     const prompt = buildOpeningQuestionsPrompt({ position: "Technical Founder", description: "  " });
     expect(prompt).toContain("(they haven't written anything yet)");
-    expect(prompt).toContain("What do you spend most of your time on?");
-    expect(prompt).toContain("How many people work at the company?");
-    expect(prompt).toContain("Do you manage other people, or do the work yourself?");
-    expect(prompt).toContain("FORBIDDEN");
-    expect(prompt).toContain("Stakeholder management");
+    expect(prompt).toContain("What takes up most of your week?");
+    expect(prompt).toContain("Roughly how many people work there?");
+    expect(prompt).toContain("Do you mostly do the work yourself, or run a team?");
+    expect(prompt).toContain("the way a curious friend would");
+    expect(prompt).toContain("offers for the person to tap, not facts about them");
+    expect(prompt).not.toContain("FORBIDDEN");
   });
 });
 
@@ -251,7 +252,7 @@ describe("buildFollowupQuestionsPrompt", () => {
     expect(prompt).toContain("ask more in a later round");
   });
 
-  it("requires the problems and collaborators questions before it may stop", () => {
+  it("asks for the problems and collaborators threads before it may stop", () => {
     const prompt = buildFollowupQuestionsPrompt({
       position: "Technical Founder",
       description: "Built stuff.",
@@ -260,9 +261,11 @@ describe("buildFollowupQuestionsPrompt", () => {
       maxRounds: MAX_QA_ROUNDS,
     });
 
-    expect(prompt).toContain("must cover ALL THREE of these before you set \"enough\" to true");
-    expect(prompt).toContain("Which problems do you work on?");
-    expect(prompt).toContain("Who do you work with?");
+    expect(prompt).toContain('Set "enough" to true once 1, 2 and 3 are all covered.');
+    expect(prompt).toContain("What are the tricky problems you end up dealing with?");
+    expect(prompt).toContain("Who do you spend the most time working with?");
+    expect(prompt).toContain("Pick up on something they just said");
+    expect(prompt).not.toContain("FORBIDDEN");
   });
 
   it("switches to the prefer-stop wording on the final round", () => {

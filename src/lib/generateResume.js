@@ -8,8 +8,9 @@ import { formatMonthSpan } from "./workHistoryTimeline";
 //                                       requirements that anchor everything after
 //   Step 2  selectRankedEvidence     -> which roles and bullets to use, with each
 //                                       role's bullets ordered most-applicable-first
-//   Step 3  composeResume            -> final markdown; the title line says what the
-//                                       candidate has BEEN, never the job they want
+//   Step 3  composeResume            -> final markdown; the title line is the target
+//                                       position when a strong-fit role backs it, and
+//                                       the summary opens with what the candidate has BEEN
 // Every step grounds its output in the person's stored history — bullets are
 // evidence to reorder and sharpen, never facts to invent.
 
@@ -479,26 +480,32 @@ export function ensureRequiredRolesSelected(selectedEvidence, coverage, workHist
   return { ...selectedEvidence, selectedWorkHistory: selected };
 }
 
-/* ── Step 3: compose the resume markdown ────────────────────── */
-export function composeResume({ profile, selectedEvidence, jobAnalysis, instructions, coverage }) {
-  const continuityInstruction = coverage?.requiredRoles?.length
-    ? "\nInclude every role in the selected evidence. Do not drop roles that cover employment gaps or the current position; the work history must read as continuous and up to date."
-    : "";
-  return `<task>
-Generate polished resume markdown from curated, pre-ranked fit evidence.
-1. Render the format below with the profile and every role in the selected evidence.
-2. Keep each role's bullets in their given order — they are already ranked most-applicable-first for this job.
-3. Write a professional title that says what the candidate has actually been, and a summary that argues fit through the job's key responsibilities.
-</task>
+// The title line under the name: the target position whenever the selected
+// evidence has a role that directly matches it ("strong" fit), so the resume
+// is headed with the job being pursued. Returns "" when there is no target
+// position or no strong-fit role — the composer then writes the candidate's
+// real title. Parentheticals like "(Remote)" or "(m/w/d)" are dropped.
+export function resumeHeadline({ selectedEvidence, jobAnalysis }) {
+  const position = String(jobAnalysis?.position ?? "")
+    .replace(/\s*\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!position) return "";
+  const roles = selectedEvidence?.selectedWorkHistory ?? [];
+  return roles.some((role) => role.fit === "strong") ? position : "";
+}
 
-<format>
-# ${profile.name || "Your Name"}
-[Professional title — see title instructions]
+// The document's fill-in schema, shared by the compose prompt and the repair
+// prompt. The summary slot spells out the sentence shape the compile check
+// below enforces; a headline from resumeHeadline is filled in literally.
+export function resumeFormatTemplate(profile, headline = "") {
+  return `# ${profile.name || "Your Name"}
+${headline || "[Professional title — see title instructions]"}
 ${getVisibleContactLine(profile)}
 
 ---
 
-[Professional summary — see summary instructions]
+[Summary paragraph — see summary instructions. 3-5 sentences on one line: "<Real title> at <employer or product> who <specific thing done>. <Specific thing done> at <employer>, <metric>. <Specific thing done> at <employer>, <metric>."]
 
 ## EXPERIENCE
 
@@ -519,7 +526,24 @@ Year · Details
 
 ## SKILLS
 
-Skill one · Skill two · Skill three
+Skill one · Skill two · Skill three`;
+}
+
+/* ── Step 3: compose the resume markdown ────────────────────── */
+export function composeResume({ profile, selectedEvidence, jobAnalysis, instructions, coverage }) {
+  const headline = resumeHeadline({ selectedEvidence, jobAnalysis });
+  const continuityInstruction = coverage?.requiredRoles?.length
+    ? "\nInclude every role in the selected evidence. Do not drop roles that cover employment gaps or the current position; the work history must read as continuous and up to date."
+    : "";
+  return `<task>
+Generate polished resume markdown from curated, pre-ranked fit evidence.
+1. Render the format below with the profile and every role in the selected evidence.
+2. Keep each role's bullets in their given order — they are already ranked most-applicable-first for this job.
+3. ${headline ? `Head the resume with the target position "${headline}", and write a summary` : "Write a professional title that says what the candidate has actually been, and a summary"} that argues fit through the job's key responsibilities.
+</task>
+
+<format>
+${resumeFormatTemplate(profile, headline)}
 </format>
 
 ${describeJobAnalysis(jobAnalysis)}
@@ -555,17 +579,126 @@ Skills section:
 - List only hands-on skills, tools, and methods from the selected evidence. Never list a degree, school, or other education credential as a skill — education appears ONLY under EDUCATION.
 
 Professional title (the line directly under the name):
-- The title line states what the candidate HAS ACTUALLY BEEN — it is a fact about their history, not a label for the job they want. NEVER use the target job's title (or a trivial variant of it) unless a role in the selected evidence carries that exact title.
-- Build it from the candidate's real titles${profile.headline ? ` or their saved headline "${profile.headline}"` : ""}, most recent experience first. You may append a short truthful specialty qualifier that points toward the target role's domain when the selected evidence supports it (e.g. "Product Manager — Analytics & Experimentation" for a data-focused target), but the base identity must be real.
+${headline
+    ? `- The title line is the target position "${headline}", exactly as filled in the format. The selected evidence includes a role that directly matches it, so the resume is headed with the job being pursued; the summary's first sentence then states what the candidate has actually been.`
+    : `- The title line states what the candidate has actually been: build it from their real titles${profile.headline ? ` or their saved headline "${profile.headline}"` : ""}, most recent experience first. You may append a short truthful specialty qualifier that points toward the target role's domain when the selected evidence supports it (e.g. "Product Manager — Analytics & Experimentation" for a data-focused target).
 - Keep it a concise title, not a sentence.
-- If no job description is provided, use ${profile.headline || jobAnalysis?.position ? `"${profile.headline || jobAnalysis.position}"` : "a concise professional title drawn from the strongest, most recent experience"}.
+- If no job description is provided, use ${profile.headline || jobAnalysis?.position ? `"${profile.headline || jobAnalysis.position}"` : "a concise professional title drawn from the strongest, most recent experience"}.`}
 
-Professional summary (the line under the divider):
-- Write 2-3 sentences that argue fit through the job's key responsibilities, not through a claimed identity. Never open with the target job title as if the candidate already holds it (e.g. do NOT write "Data Scientist with 8 years..." unless a selected role carries that title).
-- Open with the candidate's real professional identity, then connect their strongest selected evidence directly to the most central key responsibilities in job_requirements — the reader should finish the summary thinking "they have already done the core of this job", not "they claim to be one of these".
-- Anchor it with one or two of the strongest, most relevant achievements from the selected evidence, with real metrics where available.
-- Mirror the job description's own wording for skills and requirements ONLY where the selected evidence actually demonstrates them, so it passes recruiter scanning and ATS keyword matching without overstating. Do not invent qualifications, years of experience, tools, or outcomes.
-- Mention education only when it clearly satisfies an education requirement stated in the job description; when the match is partial or borderline, leave it to the EDUCATION section rather than spotlighting it in the summary.
+Professional summary (the paragraph under the divider) — fill the summary schema shown in the format:
+- One paragraph of 3-5 sentences. Each sentence states one achievement or fact in at most about 25 words, with the subject implied ("Built a Chrome extension that ..."). A new achievement starts a new sentence.
+- Sentence 1 states the candidate's real professional identity (their real titles or saved headline, in their own words) and names a specific employer, product, or project, e.g. "Technical founder at UseStackWise who ...".
+- Every sentence restates a bullet "text" field from selected_resume_evidence, naming the employer, product, or project behind it and keeping its real metric, in the bullet's own concrete words. The "supports" tags and job_requirements describe the JOB; use them only to choose and order which bullets to cite, so the summary argues fit through the job's key responsibilities by what was actually done.
+- Education belongs in the EDUCATION section; cite it in the summary only when it clearly satisfies an education requirement stated in the job description.
+</instructions>`;
+}
+
+/* ── Compile check for the composed document ────────────────── */
+// The <format> block is a fill-in schema; these checks are that schema as
+// code, so an off-format response (a full HTML page, a missing summary, a
+// run-on summary) is caught and sent back for repair instead of landing in
+// the editor. "structure" problems make the document unusable; "summary"
+// problems are shape violations of the summary schema; "title" means the line
+// under the name drifted from the headline the format filled in.
+
+export function stripCodeFence(text) {
+  return String(text ?? "")
+    .trim()
+    .replace(/^```[a-z]*[ \t]*\n?/i, "")
+    .replace(/\n?```[ \t]*$/i, "")
+    .trim();
+}
+
+// Sentence boundaries: terminal punctuation, whitespace, then a capital,
+// digit, or opening quote. "UseStackWise.com and" and "$8,000+/month projects"
+// stay intact.
+export function splitSummarySentences(summary) {
+  return String(summary ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/(?<=[.!?])\s+(?=["“(]?[A-Z0-9$])/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+const wordCount = (text) => text.split(/\s+/).filter(Boolean).length;
+
+// The paragraph between the "---" divider and the EXPERIENCE heading.
+export function extractComposedSummary(markdown) {
+  const match = String(markdown ?? "").match(/\n---[ \t]*\n([\s\S]*?)\n## EXPERIENCE/);
+  return match ? match[1].trim() : "";
+}
+
+export const SUMMARY_SENTENCE_RANGE = [3, 5];
+// The prompt asks for about 25 words per sentence; 30 leaves room for a
+// metric-heavy sentence without letting a run-on through.
+export const SUMMARY_SENTENCE_MAX_WORDS = 30;
+
+export function checkComposedResume(markdown, { targetTitle = "", headline = "" } = {}) {
+  const problems = [];
+  const structure = (message) => problems.push({ severity: "structure", message });
+  const summaryShape = (message) => problems.push({ severity: "summary", message });
+
+  const text = stripCodeFence(markdown).replace(/\r\n?/g, "\n");
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!/^# \S/.test(lines[0] ?? "")) structure('Line 1 must be the candidate\'s name as a "# " heading.');
+  if (!lines[1] || /^(#|---)/.test(lines[1])) structure("Line 2 must be the professional title.");
+  else if (headline && lines[1].toLowerCase() !== headline.trim().toLowerCase()) {
+    problems.push({ severity: "title", message: `Line 2 must be the target position "${headline.trim()}".` });
+  }
+  if (!/^## EXPERIENCE[ \t]*$/m.test(text)) structure('Missing the "## EXPERIENCE" section.');
+  if (!/^### \S/m.test(text)) structure('EXPERIENCE needs at least one "### " role heading.');
+  if (!/^## SKILLS[ \t]*$/m.test(text)) structure('Missing the "## SKILLS" section.');
+
+  const summary = extractComposedSummary(text);
+  if (!summary) {
+    structure('Missing the summary paragraph between the "---" divider and "## EXPERIENCE".');
+    return problems;
+  }
+  if (/\n[ \t]*\n/.test(summary)) summaryShape("The summary must be a single paragraph.");
+
+  const sentences = splitSummarySentences(summary);
+  const [min, max] = SUMMARY_SENTENCE_RANGE;
+  if (sentences.length < min || sentences.length > max) {
+    summaryShape(`The summary has ${sentences.length} sentence(s); the schema is ${min}-${max}.`);
+  }
+  for (const sentence of sentences) {
+    const words = wordCount(sentence);
+    if (words > SUMMARY_SENTENCE_MAX_WORDS) {
+      summaryShape(`A summary sentence runs ${words} words; each states one achievement in about 25: "${sentence.slice(0, 70)}…"`);
+    }
+  }
+  if (/\b(I|my|me|we|our|us)\b/.test(summary)) {
+    summaryShape('The summary uses first-person pronouns ("I", "my", "we", "our"); the subject is implied.');
+  }
+  const title = String(targetTitle ?? "").trim().toLowerCase();
+  if (title && (sentences[0] ?? "").toLowerCase().startsWith(title)) {
+    summaryShape(`The summary opens with the target job title "${targetTitle.trim()}" instead of the candidate's real identity.`);
+  }
+  return problems;
+}
+
+// Hands the model its own off-format document with the compile problems and
+// the format to fill, the way callLlmForJson repairs unparseable JSON.
+export function repairComposedResumePrompt({ profile, markdown, problems, headline = "" }) {
+  return `<task>
+The resume below was generated for the format shown but does not compile against it. Return the same resume corrected to match the format, keeping the same facts — change only what the problems require.
+</task>
+
+<problems>
+${problems.map((problem) => `- ${problem.message}`).join("\n")}
+</problems>
+
+<format>
+${resumeFormatTemplate(profile, headline)}
+</format>
+
+<resume>
+${markdown}
+</resume>
+
+<instructions>
+Return only markdown in the format above. Keep every role, bullet, date, and metric from the resume. The summary paragraph follows the summary schema in the format: 3-5 sentences, each one achievement of about 25 words with the subject implied, and sentence 1 naming the candidate's real title and a specific employer or project.
 </instructions>`;
 }
 

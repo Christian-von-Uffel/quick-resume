@@ -87,6 +87,7 @@ $jobDescription
 - Write each "question" conversationally, the way a colleague would ask, and so it can be answered yes or no. One discrete topic per question — never use "and", "or", "/", or "&", and never bundle several skills into one question.
 - When likelyRoles names a role, the question should connect it to the gap, e.g. "When you built churn models at Beta Inc, did you present the results to executives?" — the role gives the person a concrete memory to check.
 - In likelyRoles, copy "position" and "company" VERBATIM from the work history so they can be matched. Add a short "why" naming what in that role implies the gap. List at most 3 roles per question, best match first. Use an empty array when nothing plausibly fits.
+- For each likely role, also draft the answer the person would most likely give if the gap really happened there. Fill "basedOn" with a phrase copied VERBATIM from that role's description (the evidence the draft rests on), then write "suggestedAnswer" as one first-person sentence starting with "Yes, I" that restates that evidence in terms of the gap. Every name, tool, number, and outcome in suggestedAnswer comes from basedOn or the question; when the description holds no usable evidence, leave both fields as empty strings.
 - These are candidates for the person to confirm, NOT facts. Never state that they did something — ask.
 - Write "whyItMatters" as one short sentence on why the posting cares about this, grounded in the posting's own wording.
 - Keep "plainspokenDetail" simple, factual, and reusable as a work-history bullet if the person confirms without elaborating (e.g. "Presented analytical findings to senior leadership.").
@@ -122,7 +123,9 @@ $jobDescription
         {
           "position": "Copied verbatim from work_history",
           "company": "Copied verbatim from work_history",
-          "why": "What in this role implies the gap."
+          "why": "What in this role implies the gap.",
+          "basedOn": "Phrase copied verbatim from this role's description, or empty",
+          "suggestedAnswer": "Yes, I <the evidence in basedOn, restated for the gap>, or empty"
         }
       ],
       "plainspokenDetail": "Reusable work-history detail if confirmed without elaboration.",
@@ -195,6 +198,34 @@ function findWorkItemForRole(entry, workHistory) {
   );
 }
 
+// Collapse whitespace and case so a quote still matches a description that the
+// model re-wrapped or re-capitalized when it copied it out.
+const normalizeForQuoteMatch = (value) => String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+
+const NUMBER_PATTERN = /\d[\d,.]*/g;
+
+// A suggested answer is only worth putting in front of the person when it rests
+// on evidence already in that role's description: the model must quote the
+// phrase it built on, the quote has to really be there, and any number in the
+// suggestion has to come from the description too (invented figures are the
+// most common way a plausible-sounding draft turns false). Returns the clean
+// pair or empty strings when the suggestion doesn't earn its place.
+export function groundSuggestedAnswer({ suggestedAnswer, basedOn }, description) {
+  const empty = { suggestedAnswer: "", basedOn: "" };
+  const answer = typeof suggestedAnswer === "string" ? suggestedAnswer.replace(/\s+/g, " ").trim() : "";
+  const quote = typeof basedOn === "string" ? basedOn.replace(/\s+/g, " ").trim() : "";
+  if (!answer || !quote) return empty;
+
+  const haystack = normalizeForQuoteMatch(description);
+  if (!haystack || !haystack.includes(normalizeForQuoteMatch(quote))) return empty;
+
+  const numbersInAnswer = answer.match(NUMBER_PATTERN) ?? [];
+  const everyNumberIsFromDescription = numbersInAnswer.every((number) => haystack.includes(number.toLowerCase()));
+  if (!everyNumberIsFromDescription) return empty;
+
+  return { suggestedAnswer: answer, basedOn: quote };
+}
+
 function normalizeLikelyRoles(value, workHistory) {
   const seen = new Set();
 
@@ -208,6 +239,7 @@ function normalizeLikelyRoles(value, workHistory) {
         workId: item.id,
         label: [item.position, item.company].filter(Boolean).join(" at ") || "Untitled role",
         why: typeof entry.why === "string" ? entry.why.trim() : "",
+        ...groundSuggestedAnswer(entry, item.description),
       };
     })
     .filter(Boolean)
