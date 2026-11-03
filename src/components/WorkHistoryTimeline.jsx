@@ -4,7 +4,7 @@ import {
   assignLaneGroups,
   summarizeCoverage,
   monthIndexToLabel,
-  monthIndexToParts,
+  gapPrefill,
   formatMonthSpan,
   recencyPosition,
 } from "../lib/workHistoryTimeline";
@@ -346,14 +346,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
           const { left, width } = box(gap.start, gap.end);
           const label = `Employment gap · ${formatMonthSpan(gap.months)}`;
           const sublabel = `${monthIndexToLabel(gap.start)} — ${gap.toPresent ? "Present" : monthIndexToLabel(gap.end)}`;
-          const startParts = monthIndexToParts(gap.start);
-          const prefill = {
-            startMonth: startParts.month,
-            startYear: startParts.year,
-            ...(gap.toPresent
-              ? { endMonth: "", endYear: "present" }
-              : { endMonth: monthIndexToParts(gap.end).month, endYear: monthIndexToParts(gap.end).year }),
-          };
+          const prefill = gapPrefill(gap);
           const popup = { tone: "gap", label, sublabel, leftPct: left + width / 2, topPx: 0, gapPrefill: prefill };
           return (
             <div

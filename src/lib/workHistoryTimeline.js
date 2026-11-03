@@ -658,3 +658,78 @@ export function summarizeCoverage(workHistory, now = new Date()) {
     undatedCount: timeline.undated.length,
   };
 }
+
+// ── Gaps in the position list ───────────────────────────────────────────────
+
+// A stable key for a gap, used to remember which ones the person dismissed. An
+// open gap that runs to today keys on its start alone, so it keeps its key as
+// the months tick by instead of reappearing every month.
+export function gapKey(gap) {
+  return gap.toPresent ? `${gap.start}-present` : `${gap.start}-${gap.end}`;
+}
+
+// The start/end fields for a new position that fills a gap exactly.
+export function gapPrefill(gap) {
+  const startParts = monthIndexToParts(gap.start);
+  return {
+    startMonth: startParts.month,
+    startYear: startParts.year,
+    ...(gap.toPresent
+      ? { endMonth: "", endYear: "present" }
+      : { endMonth: monthIndexToParts(gap.end).month, endYear: monthIndexToParts(gap.end).year }),
+  };
+}
+
+// "Mar – Oct 2021", "Nov 2020 – Feb 2021", "Mar 2024 – now".
+export function formatGapRange(gap) {
+  const start = monthIndexToParts(gap.start);
+  const startLabel = monthIndexToLabel(gap.start);
+  if (gap.toPresent) return `${startLabel} – now`;
+  const end = monthIndexToParts(gap.end);
+  const endLabel = monthIndexToLabel(gap.end);
+  if (start.year === end.year) return `${startLabel.split(" ")[0]} – ${endLabel}`;
+  return `${startLabel} – ${endLabel}`;
+}
+
+// The longest gap, or null. Ties go to the more recent one.
+export function longestGap(gaps) {
+  return (gaps ?? []).reduce(
+    (best, gap) => (!best || gap.months > best.months || (gap.months === best.months && gap.start > best.start) ? gap : best),
+    null
+  );
+}
+
+// Slot gap rows into a most-recent-first position list: each gap sits just
+// above the first dated role that ended before it began, so it reads as the
+// stretch between the roles on either side. Undated roles never anchor a gap.
+export function interleaveGaps(sortedItems, gaps, now = new Date()) {
+  const pending = [...(gaps ?? [])].sort((a, b) => b.start - a.start);
+  const rows = [];
+  for (const item of sortedItems ?? []) {
+    const interval = getRoleInterval(item, now);
+    while (interval.dated && pending.length && interval.end < pending[0].start) {
+      rows.push({ type: "gap", gap: pending.shift() });
+    }
+    rows.push({ type: "role", item });
+  }
+  for (const gap of pending) rows.push({ type: "gap", gap });
+  return rows;
+}
+
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// A position's dates for a list row: "2018 – 2021", "2022 – now", or with
+// months, "Jan 2022 – Present". Empty when there's no start year to show.
+export function formatRoleRange(item, { withMonths = false } = {}) {
+  const label = (year, month) => {
+    const y = String(year ?? "").trim();
+    if (!/^\d{4}$/.test(y)) return "";
+    const m = parseInt(String(month ?? ""), 10);
+    return withMonths && m >= 1 && m <= 12 ? `${SHORT_MONTHS[m - 1]} ${y}` : y;
+  };
+  const start = label(item.startYear, item.startMonth);
+  if (!start) return "";
+  const end = isOngoingValue(item.endYear) ? (withMonths ? "Present" : "now") : label(item.endYear, item.endMonth);
+  if (!end || end === start) return start;
+  return `${start} – ${end}`;
+}

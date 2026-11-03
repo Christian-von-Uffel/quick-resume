@@ -237,7 +237,7 @@ export function ExperienceReview({
     <div ref={panelRef} className="mt-3 scroll-my-24 rounded-lg border border-blue-500/40 bg-blue-500/5 p-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-widest text-blue-600 dark:text-blue-300">
-          Clarity review
+          Polish wording
         </p>
         <button
           type="button"

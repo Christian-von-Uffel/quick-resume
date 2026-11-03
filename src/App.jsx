@@ -90,7 +90,17 @@ import {
   extractCleanedJobDescription,
   collapseBlankLines,
 } from "./lib/generateResume";
-import { summarizeCoverage, getRoleInterval, formatMonthSpan } from "./lib/workHistoryTimeline";
+import {
+  summarizeCoverage,
+  getRoleInterval,
+  formatMonthSpan,
+  buildTimeline,
+  gapKey,
+  gapPrefill,
+  longestGap,
+  interleaveGaps,
+  formatRoleRange,
+} from "./lib/workHistoryTimeline";
 import {
   detectPositionConflicts,
   applyDuplicateMerge,
@@ -105,6 +115,7 @@ import { ExperienceReview } from "./components/ExperienceReview";
 import { EnrichExperience } from "./components/EnrichExperience";
 import { PipelineSteps } from "./components/PipelineSteps";
 import { SkillsChecklist } from "./components/SkillsChecklist";
+import { GapRow, LongestGapBanner } from "./components/GapNotice";
 import Onboarding from "./components/Onboarding";
 import {
   importResume,
@@ -164,6 +175,56 @@ const SYNC_DEBOUNCE_MS = 1000;
 
 /* ── Component ─────────────────────────────────────────────── */
 
+// The app's four sections, as the bottom tab bar (phones) and top bar show
+// them. Each owns one or more of the panels keyed by activeMainTab.
+const NAV_SECTIONS = [
+  { key: "experience", label: "Experience", title: "Experience", tabs: ["workHistory", "education", "profile"] },
+  { key: "create", label: "Create", title: "Create a resume", tabs: ["ai"] },
+  { key: "resumes", label: "Resumes", title: "Resumes", tabs: ["resume"] },
+  { key: "account", label: "Account", title: "Account", tabs: ["settings"] },
+];
+const EXPERIENCE_TABS = [
+  ["workHistory", "Work"],
+  ["education", "Education"],
+  ["profile", "Contact"],
+];
+
+function NavIcon({ name, className }) {
+  if (name === "create") {
+    // The same sparkle the AI actions use: this is where the model writes.
+    return (
+      <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clipRule="evenodd" />
+      </svg>
+    );
+  }
+  const paths = {
+    experience: (
+      <>
+        <rect x="3" y="7" width="18" height="13" rx="2" />
+        <path d="M8 7V5.5A1.5 1.5 0 019.5 4h5A1.5 1.5 0 0116 5.5V7M3 12.5h18" />
+      </>
+    ),
+    resumes: (
+      <>
+        <path d="M7 3h7l5 5v12a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
+        <path d="M14 3v5h5M9.5 13h6M9.5 16.5h6" />
+      </>
+    ),
+    account: (
+      <>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4.5 20.5c.8-3.6 3.9-5.5 7.5-5.5s6.7 1.9 7.5 5.5" />
+      </>
+    ),
+  };
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[name]}
+    </svg>
+  );
+}
+
 export default function App({ initialData = null, userId = null }) {
   // The database is the single source of truth for resume data: the server loads
   // it into `initialData` on sign-in, and every edit is synced back (see below).
@@ -194,7 +255,10 @@ export default function App({ initialData = null, userId = null }) {
   const [pendingFocusWorkId, setPendingFocusWorkId] = useState(null);
   // Which position's inline clarity review is open (null = none).
   const [reviewingWorkId, setReviewingWorkId] = useState(null);
-  // Which position's inline "Expand experience" enrichment panel is open (null = none).
+  // Which position is opened out of the collapsed list (null = all closed). On
+  // phones the open position takes over the list, like a detail screen.
+  const [openWorkId, setOpenWorkId] = useState(null);
+  // Which position's inline "Interview me" enrichment panel is open (null = none).
   const [enrichingWorkId, setEnrichingWorkId] = useState(null);
   // Which position is pending a delete confirmation (null = no modal open).
   const [deleteConfirmWorkId, setDeleteConfirmWorkId] = useState(null);
@@ -273,6 +337,14 @@ export default function App({ initialData = null, userId = null }) {
   const [pageLimit, setPageLimit] = useState("auto");
   const [pageScale, setPageScale] = useState(1);
   const [activeMainTab, setActiveMainTab] = useState("workHistory");
+  const activeNavSection = NAV_SECTIONS.find((section) => section.tabs.includes(activeMainTab)) ?? NAV_SECTIONS[0];
+  // Coming back to Experience returns to whichever of Work / Education /
+  // Contact was open last.
+  const lastExperienceTabRef = useRef("workHistory");
+  if (NAV_SECTIONS[0].tabs.includes(activeMainTab)) lastExperienceTabRef.current = activeMainTab;
+  const handleSelectNavSection = (section) => {
+    setActiveMainTab(section.key === "experience" ? lastExperienceTabRef.current : section.tabs[0]);
+  };
   const [activeResumeTab, setActiveResumeTab] = useState("preview");
   const [isResumeMenuOpen, setIsResumeMenuOpen] = useState(false);
   const [isFitSidebarOpen, setIsFitSidebarOpen] = useState(false);
@@ -431,6 +503,53 @@ export default function App({ initialData = null, userId = null }) {
       return searchableText.includes(normalized);
     });
   }, [sortedWorkHistory, workHistorySearch]);
+  const openWorkItem = useMemo(
+    () => (openWorkId ? workHistory.find((item) => item.id === openWorkId) ?? null : null),
+    [workHistory, openWorkId]
+  );
+
+  // Employment gaps the person hasn't dismissed, shown as rows between positions
+  // and (the longest one) as a card above the list. Dismissals are remembered
+  // per account on this device.
+  const dismissedGapsStorageKey = userId ? `1resume:dismissed-gaps:${userId}` : null;
+  const [dismissedGapKeys, setDismissedGapKeys] = useState(() => {
+    if (!dismissedGapsStorageKey) return [];
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(dismissedGapsStorageKey) ?? "[]");
+      return Array.isArray(stored) ? stored : [];
+    } catch {
+      return [];
+    }
+  });
+  const handleDismissGap = useCallback(
+    (key) => {
+      setDismissedGapKeys((current) => {
+        if (current.includes(key)) return current;
+        const next = [...current, key];
+        if (dismissedGapsStorageKey) {
+          try {
+            window.localStorage.setItem(dismissedGapsStorageKey, JSON.stringify(next));
+          } catch {
+            // Storage can be blocked; the gap still hides for this visit.
+          }
+        }
+        return next;
+      });
+    },
+    [dismissedGapsStorageKey]
+  );
+  const visibleGaps = useMemo(
+    () => buildTimeline(sortedWorkHistory).gaps.filter((gap) => !dismissedGapKeys.includes(gapKey(gap))),
+    [sortedWorkHistory, dismissedGapKeys]
+  );
+  const bannerGap = useMemo(() => longestGap(visibleGaps), [visibleGaps]);
+  const workHistoryRows = useMemo(
+    () =>
+      workHistorySearch.trim()
+        ? visibleWorkHistory.map((item) => ({ type: "role", item }))
+        : interleaveGaps(visibleWorkHistory, visibleGaps),
+    [visibleWorkHistory, visibleGaps, workHistorySearch]
+  );
   const sortedEducation = useMemo(
     () => sortEducation(profile.education ?? []),
     [profile.education]
@@ -896,6 +1015,7 @@ export default function App({ initialData = null, userId = null }) {
     const item = createWorkHistoryItem();
     setWorkHistory((current) => [...current, item]);
     setWorkHistorySearch("");
+    setOpenWorkId(item.id);
     setHighlightedWorkId(item.id);
     setPendingFocusWorkId(item.id);
   };
@@ -905,8 +1025,14 @@ export default function App({ initialData = null, userId = null }) {
   const handleFocusWorkHistoryRole = useCallback((workId) => {
     setActiveMainTab("workHistory");
     setWorkHistorySearch("");
+    setOpenWorkId(workId);
     setHighlightedWorkId(workId);
   }, []);
+
+  const handleToggleWorkCard = (workId) => {
+    if (openWorkId !== workId) listScrollBeforeOpenRef.current = workListRef.current?.scrollTop ?? 0;
+    setOpenWorkId((current) => (current === workId ? null : workId));
+  };
 
   // Add a position from a timeline gap, pre-filled with the gap's dates so the
   // new role lands right where the hole is, then jump to it.
@@ -915,9 +1041,30 @@ export default function App({ initialData = null, userId = null }) {
     setWorkHistory((current) => sortWorkHistory([...current, item]));
     setActiveMainTab("workHistory");
     setWorkHistorySearch("");
+    setOpenWorkId(item.id);
     setHighlightedWorkId(item.id);
     setPendingFocusWorkId(item.id);
   }, []);
+
+  // Opening a position starts it at the top of the list, which on a phone is
+  // the whole screen (the other positions hide while one is open).
+  const workListRef = useRef(null);
+  // Where the list was scrolled before a position opened, so closing it puts
+  // the person back where they were instead of wherever the open card ended.
+  const listScrollBeforeOpenRef = useRef(null);
+  useEffect(() => {
+    if (!openWorkId) {
+      if (listScrollBeforeOpenRef.current != null) {
+        workListRef.current?.scrollTo({ top: listScrollBeforeOpenRef.current });
+        listScrollBeforeOpenRef.current = null;
+      }
+      return;
+    }
+    const el = document.getElementById(`work-card-${openWorkId}`);
+    const list = workListRef.current;
+    if (!el || !list) return;
+    list.scrollTo({ top: Math.max(0, el.offsetTop - 16) });
+  }, [openWorkId]);
 
   useEffect(() => {
     if (!highlightedWorkId) return;
@@ -1901,29 +2048,25 @@ export default function App({ initialData = null, userId = null }) {
       {showOnboarding && <Onboarding onComplete={completeOnboarding} />}
       <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-neutral-50">
         <div className="flex items-center gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto no-scrollbar sm:flex-wrap">
-          {[
-            ["workHistory", "Work history"],
-            ["education", "Education"],
-            ["profile", "Profile"],
-            ["ai", "Generate Resume"],
-            ["resume", "View Resumes"],
-            ["settings", "Settings"],
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveMainTab(key)}
-              className={`shrink-0 whitespace-nowrap rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
-                activeMainTab === key
-                  ? "border-neutral-600 bg-neutral-800 text-neutral-50"
-                  : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-50"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-          </div>
+          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold sm:hidden">{activeNavSection.title}</h1>
+          <nav aria-label="Sections" className="hidden min-w-0 flex-1 items-center gap-2 sm:flex">
+            {NAV_SECTIONS.map((section) => (
+              <button
+                key={section.key}
+                type="button"
+                onClick={() => handleSelectNavSection(section)}
+                aria-current={activeNavSection.key === section.key ? "page" : undefined}
+                className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+                  activeNavSection.key === section.key
+                    ? "border-neutral-600 bg-neutral-800 text-neutral-50"
+                    : "border-neutral-700 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-50"
+                }`}
+              >
+                <NavIcon name={section.key} className="h-4 w-4" />
+                {section.label}
+              </button>
+            ))}
+          </nav>
           <button
             type="button"
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -1946,6 +2089,24 @@ export default function App({ initialData = null, userId = null }) {
             )}
           </button>
         </div>
+        {activeNavSection.key === "experience" && (
+          <div role="tablist" aria-label="Experience" className="mt-3 flex rounded-lg border border-neutral-700 p-0.5 sm:max-w-sm">
+            {EXPERIENCE_TABS.map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={activeMainTab === key}
+                onClick={() => setActiveMainTab(key)}
+                className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  activeMainTab === key ? "bg-neutral-800 text-neutral-50" : "text-neutral-400 hover:text-neutral-50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="flex-1 flex flex-col sm:flex-row bg-neutral-900 text-neutral-50 min-h-0 overflow-hidden">
@@ -2061,8 +2222,8 @@ export default function App({ initialData = null, userId = null }) {
 
         {/* ── Work history ────────────────────────────── */}
         <div className={`flex-1 min-w-0 self-stretch flex-col min-h-0 ${activeMainTab === "workHistory" ? "flex" : "hidden"}`}>
-          <div className="px-4 py-3 border-b border-neutral-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
+          <div className={`px-4 py-3 border-b border-neutral-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${openWorkItem || (sortedWorkHistory.length === 0 && !isImporting) ? "max-sm:hidden" : ""}`}>
+            <div className="hidden sm:block">
               <p className="text-xs text-neutral-500 uppercase tracking-widest">
                 Work History
               </p>
@@ -2092,7 +2253,7 @@ export default function App({ initialData = null, userId = null }) {
           </div>
 
           {sortedWorkHistory.length > 0 && (
-            <div className="px-4 py-3 border-b border-neutral-800 space-y-3 max-h-[45dvh] overflow-y-auto overscroll-contain pagefit-scrollbar sm:max-h-none sm:overflow-visible">
+            <div className={`px-4 py-3 border-b border-neutral-800 space-y-3 max-h-[45dvh] overflow-y-auto overscroll-contain pagefit-scrollbar sm:max-h-none sm:overflow-visible ${openWorkItem ? "max-sm:hidden" : ""}`}>
               <PositionReviewPrompt
                 conflicts={workConflicts}
                 onOpen={() => setIsPositionReviewOpen(true)}
@@ -2112,7 +2273,16 @@ export default function App({ initialData = null, userId = null }) {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-4 pagefit-scrollbar">
+          <div ref={workListRef} className="relative flex-1 overflow-y-auto overscroll-contain p-4 space-y-2 pagefit-scrollbar">
+            {bannerGap && !workHistorySearch.trim() && (
+              <div className={`pb-2 ${openWorkItem ? "max-sm:hidden" : ""}`}>
+                <LongestGapBanner
+                  gap={bannerGap}
+                  onAdd={() => handleAddPositionForGap(gapPrefill(bannerGap))}
+                  onDismiss={() => handleDismissGap(gapKey(bannerGap))}
+                />
+              </div>
+            )}
             <ResumeImportProgress progress={importProgress} />
             {!isImporting && (
               <ResumeImportSummary
@@ -2137,45 +2307,109 @@ export default function App({ initialData = null, userId = null }) {
                 No positions match that search.
               </div>
             ) : (
-              visibleWorkHistory.map((item) => {
+              workHistoryRows.map((row) => {
+                if (row.type === "gap") {
+                  const key = gapKey(row.gap);
+                  return (
+                    <div key={`gap-${key}`} className={openWorkItem ? "max-sm:hidden" : undefined}>
+                      <GapRow
+                        gap={row.gap}
+                        onAdd={() => handleAddPositionForGap(gapPrefill(row.gap))}
+                        onDismiss={() => handleDismissGap(key)}
+                      />
+                    </div>
+                  );
+                }
+
+                const item = row.item;
                 const interval = getRoleInterval(item);
                 const tenureLabel = interval.dated
                   ? formatMonthSpan(interval.end - interval.start + 1)
                   : "";
                 const sparse = isSparseDescription(item.description);
+                const isOpen = openWorkItem?.id === item.id;
+                const roleTitle = item.position.trim() || "Untitled position";
 
                 return (
                 <div
                   key={item.id}
                   id={`work-card-${item.id}`}
-                  className={`rounded-xl border bg-neutral-950/40 p-4 transition-shadow duration-500 ${
+                  className={`rounded-xl border bg-neutral-950/40 transition-shadow duration-500 ${
                     highlightedWorkId === item.id
                       ? "border-blue-500 ring-2 ring-blue-500/60"
                       : "border-neutral-800"
-                  }`}
+                  } ${openWorkItem && !isOpen ? "max-sm:hidden" : ""}`}
                 >
-                  <div className="flex items-center justify-between gap-2 mb-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleToggleExperienceReview(item.id)}
-                        disabled={!item.description.trim()}
-                        title={
-                          item.description.trim()
-                            ? "Ask the model to flag hard-to-read sentences"
-                            : "Add a description first to review it."
-                        }
-                        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                          reviewingWorkId === item.id
-                            ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
-                            : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
-                        }`}
-                      >
-                        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                          <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
-                        </svg>
-                        {reviewingWorkId === item.id ? "Reviewing for clarity" : "Review for clarity"}
-                      </button>
+                  {!isOpen ? (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleWorkCard(item.id)}
+                      aria-expanded="false"
+                      className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-neutral-800/40"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-neutral-100">{roleTitle}</span>
+                        <span className="block truncate text-xs text-neutral-500">
+                          {[item.company.trim(), formatRoleRange(item)].filter(Boolean).join(" · ") || "Add the company and dates"}
+                        </span>
+                      </span>
+                      {sparse && item.position.trim() && (
+                        <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" title="This role looks light" aria-label="This role looks light" />
+                      )}
+                      <svg className="h-4 w-4 shrink-0 text-neutral-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  ) : (
+                  <div className="p-4 space-y-4">
+                    <button
+                      type="button"
+                      onClick={() => setOpenWorkId(null)}
+                      className="-ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-sm text-neutral-400 transition-colors hover:text-neutral-100 sm:hidden"
+                    >
+                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" />
+                      </svg>
+                      All positions
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleWorkCard(item.id)}
+                      aria-expanded="true"
+                      className="flex w-full items-start gap-3 text-left"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-lg font-semibold text-neutral-50">{roleTitle}</span>
+                        <span className="block text-sm text-neutral-400">
+                          {[item.company.trim(), formatRoleRange(item, { withMonths: true }), tenureLabel].filter(Boolean).join(" · ")}
+                        </span>
+                      </span>
+                      <svg className="mt-1.5 hidden h-4 w-4 shrink-0 text-neutral-500 sm:block" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832 6.29 12.77a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+
+                    <label className="block">
+                      <span className="block text-xs text-neutral-500 mb-1">
+                        What you did
+                      </span>
+                      <textarea
+                        value={item.description}
+                        onChange={(e) => handleUpdateWorkHistory(item.id, "description", e.target.value)}
+                        placeholder="Describe the responsibilities, accomplishments, and results from this role."
+                        rows={6}
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
+                      />
+                    </label>
+
+                    
+                    {sparse && item.position.trim() && enrichingWorkId !== item.id && (
+                      <p className="-mt-2 text-xs text-neutral-500">
+                        This role looks light. A few quick questions can fill it in.
+                      </p>
+                    )}
+
+                    <div className="flex gap-2">
                       <button
                         type="button"
                         onClick={() => handleToggleEnrichExperience(item.id)}
@@ -2183,41 +2417,73 @@ export default function App({ initialData = null, userId = null }) {
                         title={
                           !item.position.trim()
                             ? "Add a position title first so we know what this job usually involves."
-                            : sparse
-                              ? "This entry looks light — answer a few quick questions to surface experience you haven't written down yet."
-                              : "Answer a few quick questions to surface experience you haven't written down yet."
+                            : "Answer a few quick questions about this job to bring out experience you haven't written down yet."
                         }
-                        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none ${
                           enrichingWorkId === item.id
                             ? "border-violet-500 bg-violet-500/20 text-violet-700 dark:text-violet-200"
                             : "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20"
                         }`}
                       >
-                        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                           <path fillRule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clipRule="evenodd" />
                         </svg>
-                        {enrichingWorkId === item.id ? "Expanding experience" : "Expand experience"}
-                        {sparse && enrichingWorkId !== item.id && item.position.trim() && (
-                          <span
-                            className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
-                            aria-hidden="true"
-                          />
-                        )}
+                        Interview me
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleExperienceReview(item.id)}
+                        disabled={!item.description.trim()}
+                        title={
+                          item.description.trim()
+                            ? "Find hard-to-read sentences and suggest clearer wording."
+                            : "Add what you did first, then polish the wording."
+                        }
+                        className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none ${
+                          reviewingWorkId === item.id
+                            ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
+                            : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
+                        }`}
+                      >
+                        <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                          <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+                        </svg>
+                        Polish wording
                       </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDeletePositionConfirmText("");
-                        setDeleteConfirmWorkId(item.id);
-                      }}
-                      className="rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-red-300"
-                    >
-                      Delete
-                    </button>
-                  </div>
 
-                  <div className="space-y-3">
+                    {reviewingWorkId === item.id && (
+                      <ExperienceReview
+                        key={item.id}
+                        position={item.position}
+                        company={item.company}
+                        description={item.description}
+                        reviewSentences={handleReviewSentences}
+                        proposeRewrite={handleProposeSentenceRewrite}
+                        onAcceptSentence={(original, replacement) =>
+                          handleReplaceSentenceInWork(item.id, original, replacement)
+                        }
+                        onClose={() => setReviewingWorkId(null)}
+                      />
+                    )}
+
+                    {enrichingWorkId === item.id && (
+                      <EnrichExperience
+                        key={item.id}
+                        position={item.position}
+                        company={item.company}
+                        description={item.description}
+                        tenureLabel={tenureLabel}
+                        loadOpening={handleLoadOpeningQuestions}
+                        loadFollowups={handleLoadFollowupQuestions}
+                        composeBullets={handleComposeEnrichedBullets}
+                        onAcceptBullet={(bullet) => handleAppendDetailToWork(item.id, bullet)}
+                        onClose={() => setEnrichingWorkId(null)}
+                      />
+                    )}
+
+                    <div className="space-y-3 border-t border-neutral-800 pt-4">
+                      <p className="text-xs uppercase tracking-widest text-neutral-500">Title and dates</p>
                     <label className="block">
                       <span className="block text-xs text-neutral-500 mb-1">
                         Position
@@ -2323,50 +2589,20 @@ export default function App({ initialData = null, userId = null }) {
                       />
                       Present — I currently work here
                     </label>
+                    </div>
 
-                    <label className="block">
-                      <span className="block text-xs text-neutral-500 mb-1">
-                        Description
-                      </span>
-                      <textarea
-                        value={item.description}
-                        onChange={(e) => handleUpdateWorkHistory(item.id, "description", e.target.value)}
-                        placeholder="Describe the responsibilities, accomplishments, and results from this role."
-                        rows={4}
-                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
-                      />
-                    </label>
-
-                    {reviewingWorkId === item.id && (
-                      <ExperienceReview
-                        key={item.id}
-                        position={item.position}
-                        company={item.company}
-                        description={item.description}
-                        reviewSentences={handleReviewSentences}
-                        proposeRewrite={handleProposeSentenceRewrite}
-                        onAcceptSentence={(original, replacement) =>
-                          handleReplaceSentenceInWork(item.id, original, replacement)
-                        }
-                        onClose={() => setReviewingWorkId(null)}
-                      />
-                    )}
-
-                    {enrichingWorkId === item.id && (
-                      <EnrichExperience
-                        key={item.id}
-                        position={item.position}
-                        company={item.company}
-                        description={item.description}
-                        tenureLabel={tenureLabel}
-                        loadOpening={handleLoadOpeningQuestions}
-                        loadFollowups={handleLoadFollowupQuestions}
-                        composeBullets={handleComposeEnrichedBullets}
-                        onAcceptBullet={(bullet) => handleAppendDetailToWork(item.id, bullet)}
-                        onClose={() => setEnrichingWorkId(null)}
-                      />
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeletePositionConfirmText("");
+                        setDeleteConfirmWorkId(item.id);
+                      }}
+                      className="rounded-md px-1 py-1 text-sm text-red-400/80 transition-colors hover:text-red-300"
+                    >
+                      Delete position
+                    </button>
                   </div>
+                  )}
                 </div>
                 );
               })
@@ -2475,10 +2711,10 @@ export default function App({ initialData = null, userId = null }) {
         <div className={`flex-1 min-w-0 self-stretch flex-col min-h-0 ${activeMainTab === "ai" ? "flex" : "hidden"}`}>
           <div className="px-4 py-3 border-b border-neutral-800">
             <p className="text-xs text-neutral-500 uppercase tracking-widest">
-              Generate Resume
+              Create a resume
             </p>
             <p className="mt-1 text-xs text-neutral-500">
-              Generate a resume from your profile, work history, and the target role.
+              Paste a job and get a resume built only from your saved experience.
             </p>
           </div>
 
@@ -2608,10 +2844,10 @@ export default function App({ initialData = null, userId = null }) {
 
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                 <h2 className="text-sm font-semibold text-neutral-200">
-                  Address missing experience
+                  Missing requirements
                 </h2>
                 <p className="mt-1 text-sm text-neutral-500">
-                  Reads everything this job asks for — responsibilities, leadership, stakeholders, ways of working, tools — and finds where your existing roles can say more. Each question connects a gap to the role where it probably happened.
+                  Finds requirements in this job that your work history doesn't mention yet, then asks a few quick questions about where you did them. Your answers are saved to your experience, so every future resume can use them too.
                 </p>
                 <button
                   type="button"
@@ -2620,7 +2856,7 @@ export default function App({ initialData = null, userId = null }) {
                   title={findMissingDisabledReason || undefined}
                   className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isFindingMissingExperience ? "Reviewing the job description..." : "Address missing experience"}
+                  {isFindingMissingExperience ? "Checking the job's requirements..." : "Check for missing requirements"}
                 </button>
                 {!isFindingMissingExperience && findMissingDisabledReason && (
                   <p className="mt-2 text-xs text-neutral-500">{findMissingDisabledReason}</p>
@@ -3464,10 +3700,35 @@ export default function App({ initialData = null, userId = null }) {
         </div>
       </main>
 
+      <nav
+        aria-label="Sections"
+        className="shrink-0 border-t border-neutral-800 bg-neutral-950 pb-[env(safe-area-inset-bottom)] sm:hidden"
+      >
+        <div className="flex">
+          {NAV_SECTIONS.map((section) => {
+            const isActive = activeNavSection.key === section.key;
+            return (
+              <button
+                key={section.key}
+                type="button"
+                onClick={() => handleSelectNavSection(section)}
+                aria-current={isActive ? "page" : undefined}
+                className={`flex flex-1 flex-col items-center gap-0.5 pb-2 pt-2.5 text-[11px] font-medium transition-colors ${
+                  isActive ? "text-blue-500 dark:text-blue-400" : "text-neutral-500"
+                }`}
+              >
+                <NavIcon name={section.key} className="h-6 w-6" />
+                {section.label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
       {(workHistorySaveToast || profileDataToast) && (
         <div
           role="status"
-          className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-emerald-500/30 bg-neutral-900 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-200 shadow-lg"
+          className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 sm:bottom-6 rounded-lg border border-emerald-500/30 bg-neutral-900 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-200 shadow-lg"
         >
           {workHistorySaveToast || profileDataToast}
         </div>
