@@ -58,11 +58,12 @@ export function requireServerApiKey(providerLabel) {
 
 // Preference order when picking a default chat provider: use the first one
 // whose server env key is set so a missing Gemini key doesn't fail generation
-// when another provider is configured.
+// when another provider is configured. OpenAI leads because gpt-5.6-luna is the
+// cheapest model that holds the app's quality bar.
 const LLM_PROVIDER_PRIORITY = [
+  ["openai", "OpenAI"],
   ["xai", "xAI"],
   ["anthropic", "Anthropic"],
-  ["openai", "OpenAI"],
   ["gemini", "Gemini"],
 ];
 
