@@ -67,6 +67,8 @@ export function mapDbRowsToAppState({ profile, education, workHistory, resumes }
       endMonth: row.end_month ?? "",
       endYear: row.end_year ?? "",
       description: row.description ?? "",
+      polishedAt: row.polished_at ?? "",
+      interviewedAt: row.interviewed_at ?? "",
     })),
     resumes: resumeRows.map((row) => ({
       id: row.id,
@@ -95,6 +97,7 @@ const asEndYear = (value) => {
   const text = asText(value);
   return text === "present" || /^\d{4}$/.test(text) ? text : "";
 };
+const asTimestamp = (value) => (asText(value) && !Number.isNaN(Date.parse(value)) ? asText(value) : null);
 const isUuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(asText(value));
 
@@ -151,6 +154,8 @@ export function buildDbWritePayload({ profile, workHistory, resumes, selectedRes
       end_month: asMonth(item.endMonth),
       end_year: asEndYear(item.endYear),
       description: asText(item.description),
+      polished_at: asTimestamp(item.polishedAt),
+      interviewed_at: asTimestamp(item.interviewedAt),
     }))
     .filter((row) => row.position || row.company || row.description);
 

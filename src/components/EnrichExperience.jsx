@@ -35,6 +35,7 @@ export function EnrichExperience({
   askQuestion,
   suggest,
   onAcceptBullet,
+  onComplete,
   onClose,
 }) {
   // "loading" | "asking" | "review" | "error"
@@ -404,7 +405,14 @@ export function EnrichExperience({
             <button type="button" onClick={handleKeepInterviewing} className={secondaryButtonClass}>
               Keep interviewing
             </button>
-            <button type="button" onClick={onClose} className={secondaryButtonClass}>
+            <button
+              type="button"
+              onClick={() => {
+                onComplete?.();
+                onClose();
+              }}
+              className={secondaryButtonClass}
+            >
               Done
             </button>
           </div>
