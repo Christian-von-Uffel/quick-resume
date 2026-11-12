@@ -71,6 +71,20 @@ describe("buildInterviewQuestionPrompt", () => {
     expect(prompt).toContain("(this is the first question)");
     expect(prompt).toContain("(nothing written yet)");
   });
+
+  it("asks who relied on the work and what goes wrong with it", () => {
+    const prompt = buildInterviewQuestionPrompt(CHATTREPORT);
+    expect(prompt).toContain("Who relied on the work");
+    expect(prompt).toContain("What usually goes wrong with a task");
+    expect(prompt).toContain("ask what they do to catch or prevent it");
+  });
+
+  it("asks for questions that stand on their own, in plain words", () => {
+    const prompt = buildInterviewQuestionPrompt(CHATTREPORT);
+    expect(prompt).toContain("makes sense read on its own");
+    expect(prompt).toContain('"Your work description says you <what it says>. It doesn\'t say <the piece still missing>."');
+    expect(prompt).toContain("Who was the online order form mainly for?");
+  });
 });
 
 describe("checkInterviewQuestion", () => {
@@ -81,10 +95,41 @@ describe("checkInterviewQuestion", () => {
     examples: ["I type it in", "Software reads the image", "A mix of both"],
   };
 
+  const known = [CHATTREPORT.position, CHATTREPORT.company, CHATTREPORT.description].join("\n");
+
   it("passes a turn in the format", () => {
-    const { turn, problems } = checkInterviewQuestion(good, { transcript: CHATTREPORT.transcript });
+    const { turn, problems } = checkInterviewQuestion(good, { transcript: CHATTREPORT.transcript, known });
     expect(problems).toEqual([]);
     expect(turn).toEqual(good);
+  });
+
+  it("flags a question that only makes sense after reading the context", () => {
+    // The 2026-11-12 opener: the bold line names nothing from the work.
+    const { problems } = checkInterviewQuestion(
+      {
+        heard: "",
+        context:
+          "Your write-up shows you pulled events from 250+ sources into one calendar and newsletter, but not who was hurting before that existed.",
+        question: "Who had the biggest headache you set out to fix, and what was going wrong for them?",
+        examples: ["Locals missing events", "Businesses not reaching people"],
+      },
+      { transcript: [], known }
+    );
+    expect(problems.join(" ")).toMatch(/make sense read on its own/);
+  });
+
+  it("passes a question that names the thing it asks about", () => {
+    const { problems } = checkInterviewQuestion(
+      {
+        heard: "",
+        context:
+          "Your work description says you pull events from 250+ sources into one calendar. It doesn't say who you made it for.",
+        question: "Who was the events calendar mainly for?",
+        examples: ["Locals looking for things to do", "Business owners promoting events"],
+      },
+      { transcript: [], known }
+    );
+    expect(problems).toEqual([]);
   });
 
   it("flags two questions joined together", () => {
@@ -96,9 +141,14 @@ describe("checkInterviewQuestion", () => {
     expect(problems.join(" ")).toMatch(/exactly one question/);
   });
 
-  it("flags a question with no context pointing back to what they said", () => {
-    const { problems } = checkInterviewQuestion({ ...good, context: "  " });
-    expect(problems.join(" ")).toMatch(/"context" is empty/);
+  it("flags a question with nothing pointing back to what they said", () => {
+    const { problems } = checkInterviewQuestion({ ...good, heard: "", context: "  " });
+    expect(problems.join(" ")).toMatch(/"context" and "heard" are both empty/);
+  });
+
+  it("lets a follow-up lean on heard alone", () => {
+    const { problems } = checkInterviewQuestion({ ...good, context: "" }, { transcript: CHATTREPORT.transcript, known });
+    expect(problems).toEqual([]);
   });
 
   it("flags a question already asked", () => {
@@ -132,6 +182,12 @@ describe("buildInterviewSuggestionsPrompt", () => {
     expect(prompt).toContain('"problem"');
     expect(prompt).toContain('"left_out"');
     expect(prompt).toContain("A: only 1/151 so far");
+  });
+
+  it("turns checks against mistakes and who relied on the work into suggestions", () => {
+    const prompt = buildInterviewSuggestionsPrompt(CHATTREPORT);
+    expect(prompt).toContain("write the check they do and what it prevents");
+    expect(prompt).toContain("name those people and what the work let them do");
   });
 });
 

@@ -65,19 +65,21 @@ ${conversation || "(this is the first question)"}
 </conversation_so_far>
 
 <what_to_ask_about>
-Pick the most useful thing still unknown:
-1. The problem the work solved, and who had that problem.
-2. How they solved it: the method, tools, channels, and skills they used.
-3. What they made: deliverables like reports, dashboards, videos, posters, apps, or new processes.
-4. The result, in their own numbers. When they give a number, ask how they got there.
+Work down this list and ask about the first thing still unknown:
+1. Who the work was mainly for, asked about the thing they made, like "Who was the online order form mainly for?" Then what those people did before it existed, like "Before the order form, how did customers place orders?"
+2. Who relied on the work, and what would break or pile up if they stopped doing it, asked like "Who counts on those posts?" or "What would pile up if you stopped?"
+3. How they solved it: the method, tools, channels, and skills they used.
+4. What they made: deliverables like reports, dashboards, videos, posters, apps, or new processes.
+5. What usually goes wrong with a task they already mentioned, and how they handle it. This takes two turns. First ask what goes wrong, with "context" pointing to the task and "examples" listing mistakes common to it, like "Typos", "Wrong event dates", or "Blurry images" for social media posts. When they name a mistake, ask what they do to catch or prevent it, with "examples" listing likely checks.
+6. The result, in their own numbers. When they give a number, ask how they got there.
 Follow their last answer one layer deeper when it opened something new, then move to the next unknown. When two answers seem to overlap or conflict, ask a short question to clear it up. The title, company, and time in the role above are already known.
 </what_to_ask_about>
 
 <how_to_write_it>
-The person may be tired. Each question asks for one small fact they can answer in a few words; you put the pieces together at the end.
+The person may be tired. Each question asks for one small fact they can answer in a few words; you put the pieces together at the end. Write the way people talk to a friend, in plain everyday words.
 - "heard": one plain sentence restating their last answer, naming what it shows when that is clear (time saved, a skill, a problem solved). For the first question, or right after a skipped one, use "".
-- "context": one sentence pointing to what they said, or what the description says, that this question follows from, so they can see why you are asking. Quote their words when you can.
-- "question": one short question in everyday words, the way a friend would ask it, ending with a question mark.
+- "context": one or two short sentences showing why you are asking, filled in like "Your work description says you <what it says>. It doesn't say <the piece still missing>." or "Earlier you said <their words from an earlier answer>." When the question follows straight from "heard", use "", since "heard" already shows why.
+- "question": one short question that makes sense read on its own, ending with a question mark. It names the thing it asks about in their words, like "Who was the online order form mainly for?" rather than "Who was it for?"
 - "examples": ${MIN_EXAMPLES} to ${MAX_EXAMPLES} short sample answers they could tap, each a few words.
 </how_to_write_it>
 
@@ -86,14 +88,38 @@ Return only a JSON object in this shape:
 {
   "heard": "So you went from baking everything yourself to training two new bakers.",
   "context": "You said the shop sells out of bread most Saturdays.",
-  "question": "About how many loaves do you bake on a Saturday?",
+  "question": "About how many loaves of bread do you bake on a Saturday?",
   "examples": ["Under 100", "100 to 300", "More than 300"]
 }`;
 }
 
+// Words that name something, so a question can be matched to the work it's
+// about. Question words and filler don't count; plurals match singulars.
+const FILLER_WORDS = new Set(
+  (
+    "a an the and or but of to in on at for by with from into about over under as is are was were be been " +
+    "do does did doesn have has had it its this that these those there their they them you your yours i me my we our " +
+    "what which who whom whose when where why how much many most more some any each every one ever just also " +
+    "out get got can not all than then own way usually mainly mostly really roughly around before after " +
+    "said say says mention mentioned talk work description"
+  ).split(" ")
+);
+
+function namingWords(text) {
+  return new Set(
+    String(text ?? "")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g)
+      ?.filter((word) => word.length > 2 && !FILLER_WORDS.has(word))
+      .map((word) => (word.length > 3 ? word.replace(/s$/, "") : word)) ?? []
+  );
+}
+
 // Format check for one question turn. Returns the cleaned turn plus every way
 // it misses the format; an empty problems list means it can be shown as is.
-export function checkInterviewQuestion(value, { transcript = [] } = {}) {
+// `known` is everything already written about the job (title, company,
+// description), which the question can name as well as the context.
+export function checkInterviewQuestion(value, { transcript = [], known = "" } = {}) {
   const problems = [];
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { turn: null, problems: ["Return a single JSON object with heard, context, question, and examples."] };
@@ -126,9 +152,18 @@ export function checkInterviewQuestion(value, { transcript = [] } = {}) {
     if (asked.includes(question.toLowerCase())) {
       problems.push(`"question" was already asked earlier. Ask about something still unknown.`);
     }
+    // A question that names nothing from their work ("Who had the biggest
+    // headache you set out to fix?") only makes sense after reading the context.
+    const answers = normalizeStoredList(transcript, []).map((entry) => entry?.answer);
+    const about = namingWords([heard, context, known, ...answers].join("\n"));
+    if (![...namingWords(question)].some((word) => about.has(word))) {
+      problems.push(
+        `"question" has to make sense read on its own. Name the task or thing it asks about, in their words: "${question}"`
+      );
+    }
   }
-  if (!context) {
-    problems.push('"context" is empty. Point to what they said, or what the description says, that this question follows from.');
+  if (!context && !heard) {
+    problems.push('"context" and "heard" are both empty. Point to what they said, or what the description says, that this question follows from.');
   }
   if (examples.length < MIN_EXAMPLES) {
     problems.push(`"examples" needs ${MIN_EXAMPLES} to ${MAX_EXAMPLES} short sample answers.`);
@@ -158,6 +193,8 @@ ${formatInterviewTranscript(transcript) || "(no answers)"}
 - "problem": 2 to 6 words naming the business problem solved or the skill an employer hires for, like "Cut manual data entry", "Designed sales dashboards", "Reached customers who miss social posts", or "Ran low-cost local marketing".
 - "bullet": one or two sentences that start with a past-tense verb. Say what they did, how they did it (methods, tools, channels), what they made (deliverables), and the result in the numbers they gave.
 - Frame each suggestion around what a business gets from it: time or money saved, a risk removed, customers reached, or a deliverable it needs someone to make.
+- When they said what they do to catch or prevent a mistake, write the check they do and what it prevents, like "Verified event details with organizers before posting, preventing incorrect listings."
+- When they said who relied on the work, name those people and what the work let them do.
 - Name features specific to their company by the transferable skill behind them, like "set up push notifications" or "built a quality check for incoming data".
 - Write every bullet from facts in the interview or the current description, using their numbers as they gave them, and describe status exactly as they did: work still in testing or not yet used stays that way. Each suggestion adds something the current description does not already say.
 - "left_out": things they mentioned but could not back up, like unknown numbers or results they believe but have no proof of, each with a short reason. Use [] when nothing was left out.
@@ -298,8 +335,9 @@ async function callWithOneRepair(callJson, prompt, check) {
 
 export async function askInterviewQuestion(callJson, args) {
   const prompt = buildInterviewQuestionPrompt(args);
+  const known = [args.position, args.company, args.description].join("\n");
   const { turn } = await callWithOneRepair(callJson, prompt, (value) =>
-    checkInterviewQuestion(value, { transcript: args.transcript })
+    checkInterviewQuestion(value, { transcript: args.transcript, known })
   );
   if (!turn) throw new Error("Couldn't come up with the next question. Try again.");
   return turn;
