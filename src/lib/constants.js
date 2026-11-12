@@ -28,19 +28,20 @@ export const MAX_AUTO_PAGES = 2;
 export const PAGE_GAP = 24;
 export const PROFILE_EXPORT_VERSION = 1;
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
-export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+export const DEFAULT_OPENAI_MODEL = "gpt-5.6-luna";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 export const DEFAULT_XAI_MODEL = "grok-4.5";
 export const MISTRAL_OCR_MODEL = "mistral-ocr-latest";
 
 export const LLM_PROVIDERS = [
+  ["openai", "OpenAI"],
   ["xai", "xAI"],
   ["anthropic", "Anthropic"],
-  ["openai", "OpenAI"],
   ["gemini", "Google"],
 ];
 
 export const OPENAI_MODEL_OPTIONS = [
+  ["gpt-5.6-luna", "gpt-5.6-luna"],
   ["gpt-5.5", "gpt-5.5"],
   ["gpt-5.4", "gpt-5.4"],
   ["gpt-5.4-mini", "gpt-5.4-mini"],
@@ -97,8 +98,8 @@ export const DEFAULT_PROFILE = {
 
 export const DEFAULT_LLM_SETTINGS = {
   // Bundled startup default before the server reports which keys are set.
-  // App load then switches to the first configured provider (xAI → Anthropic →
-  // OpenAI → Google).
+  // App load then switches to the first configured provider (OpenAI → xAI →
+  // Anthropic → Google).
   provider: "gemini",
   model: DEFAULT_GEMINI_MODEL,
 };

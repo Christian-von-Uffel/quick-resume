@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MAX_QA_ROUNDS } from "../lib/enrichExperience";
+import { INTERVIEW_INTRO } from "../lib/interviewMe";
 import {
   newMetricId,
   startExperienceExpansion,
@@ -12,338 +12,218 @@ import {
   recordSuggestionRejected,
 } from "../lib/metrics";
 
-const chipClass = (active) =>
-  `rounded-lg border px-3 py-1.5 text-sm transition-colors ${
-    active
-      ? "border-violet-500 bg-violet-500/20 text-neutral-50"
-      : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
-  }`;
+const chipClass =
+  "rounded-lg border border-neutral-700 px-3 py-1.5 text-left text-sm text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50";
 
-// Attach the per-question runtime answer state a fresh round of questions needs.
-const withRuntimeState = (questions) =>
-  questions.map((question) => ({
-    ...question,
-    choice: null, // single-select / yes-no answer
-    choices: [], // multi-select answers
-    usingCustom: false,
-    customAnswer: "",
-    skipped: false,
-  }));
+const secondaryButtonClass =
+  "rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 disabled:cursor-not-allowed disabled:opacity-50";
 
-// Turn a round's answered questions into transcript entries { question, answer }.
-// Skipped and unanswered questions drop out; multi-select answers join with commas.
-const collectAnswers = (questions) =>
-  questions
-    .map((question) => {
-      if (question.skipped) return null;
-      if (question.usingCustom && question.customAnswer.trim()) {
-        return { question: question.question, answer: question.customAnswer.trim() };
-      }
-      if (question.multiSelect && question.choices.length) {
-        return { question: question.question, answer: question.choices.join(", ") };
-      }
-      if (!question.multiSelect && question.choice) {
-        return { question: question.question, answer: question.choice };
-      }
-      return null;
-    })
-    .filter(Boolean);
+// What the prompts read back: finished turns only, in order.
+const toTranscript = (turns) =>
+  turns.map(({ context, question, answer, skipped }) => ({ context, question, answer, skipped }));
 
-// Inline "Expand experience" panel for a single work-history position. Rather than
-// guessing what job postings for the title demand, it runs a short, adaptive
-// interview: a couple of dead-simple grounded questions about what the person
-// actually does, then follow-up rounds that branch off their own answers, then a
-// compose step that turns the whole transcript into a few plainspoken bullets the
-// person can add to the description.
+// Inline "Interview me" panel for a single work-history position. A plain,
+// one-question-at-a-time conversation: each question restates what the person
+// just said and points to why it's being asked, with sample answers to tap.
+// Wrap up turns the conversation into suggestions framed as business problems
+// this person has solved, each one kept or skipped individually.
 export function EnrichExperience({
   position,
   company,
   description,
   tenureLabel,
-  loadOpening,
-  loadFollowups,
-  composeBullets,
+  askQuestion,
+  suggest,
   onAcceptBullet,
   onClose,
 }) {
-  // "loading" | "answering" | "review" | "error"
+  // "loading" | "asking" | "review" | "error"
   const [status, setStatus] = useState("loading");
-  // Which async step is (or was) running: "opening" | "followups" | "compose".
-  // Drives the loading copy and what a "Try again" retries.
-  const [loadingKind, setLoadingKind] = useState("opening");
-  const [round, setRound] = useState(1); // 1 = opening, 2..MAX_QA_ROUNDS = follow-ups
-  const [questions, setQuestions] = useState([]); // this round's questions
-  const [transcript, setTranscript] = useState([]); // accumulated { question, answer }
-  const [bullets, setBullets] = useState([]); // [{ text, resolution: null|"accepted"|"rejected" }]
+  // Which async step is (or was) running: "question" | "suggestions".
+  const [loadingKind, setLoadingKind] = useState("question");
+  const [turns, setTurns] = useState([]); // finished { heard, context, question, examples, answer, skipped }
+  const [current, setCurrent] = useState(null); // the question on screen
+  const [draft, setDraft] = useState("");
+  const [suggestions, setSuggestions] = useState([]); // [{ problem, bullet, resolution, suggestionId }]
+  const [leftOut, setLeftOut] = useState([]);
   const [error, setError] = useState("");
 
   const cancelledRef = useRef(false);
   const panelRef = useRef(null);
-  // Holds a thunk that re-runs the last async step with its exact arguments, so
-  // "Try again" always retries what actually failed (right transcript and round).
+  const currentRef = useRef(null);
+  // Bullets kept so far, so a later wrap-up (after "Keep interviewing") sees
+  // them as already written and doesn't suggest them again.
+  const keptRef = useRef([]);
+  // Re-runs the last async step with its exact arguments, so "Try again"
+  // retries what actually failed.
   const retryRef = useRef(null);
-  // The experience_expansions row this interview's questions and bullets hang
-  // off, and the questions.id for each question on screen this round.
+  // The experience_expansions row this interview hangs off; created once the
+  // first question is ready to show.
   const expansionIdRef = useRef(null);
-  const questionIdsRef = useRef({});
+  const expansionStartedRef = useRef(false);
 
   // The trigger button lives at the top of a tall position card, so this panel
-  // opens below the fold. Pull it into view on open ("nearest" no-ops when it's
-  // already visible, so a card near the top of the screen isn't yanked).
+  // opens below the fold. "nearest" no-ops when it's already visible.
   useEffect(() => {
     panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, []);
 
-  // Run the opening batch once on open. The parent remounts this component (keyed
-  // by position id) whenever a fresh interview is wanted, so this snapshots the
-  // description at open time.
+  // Keep each new question in view as the thread grows.
+  useEffect(() => {
+    if (current) currentRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [current]);
+
+  // The parent remounts this component (keyed by position id) for a fresh
+  // interview, so this snapshots the description at open time.
   useEffect(() => {
     cancelledRef.current = false;
-    // Minted before the first call so every round's cost records against this
-    // interview; the row itself waits until there are questions to show.
+    // Minted before the first call so every turn's cost records against it.
     expansionIdRef.current = newMetricId();
-    runOpening();
+    runQuestion([]);
     return () => {
       cancelledRef.current = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // One row per question on screen, keyed by question id so answering or
-  // skipping can find it later.
-  const rememberQuestions = (found, roundNumber, promptId = null) => {
-    const ids = recordQuestionsPresented(
-      { experienceExpansionId: expansionIdRef.current },
-      found.map((question) => ({
-        promptId,
-        question: question.question,
-        options: question.options ?? [],
-        round: roundNumber,
-      }))
-    );
-    questionIdsRef.current = Object.fromEntries(
-      found.map((question, index) => [question.id, ids[index]])
-    );
-  };
-
-  const runOpening = async () => {
-    retryRef.current = runOpening;
+  const runQuestion = async (finishedTurns) => {
+    retryRef.current = () => runQuestion(finishedTurns);
     setStatus("loading");
-    setLoadingKind("opening");
+    setLoadingKind("question");
     setError("");
     try {
-      let openingPromptId = null;
-      const found = await loadOpening({
+      let promptId = null;
+      const turn = await askQuestion({
         position,
         company,
         description,
         tenureLabel,
+        transcript: toTranscript(finishedTurns),
         runId: expansionIdRef.current,
         onPromptId: (id) => {
-          openingPromptId = id;
+          promptId = id;
         },
       });
       if (cancelledRef.current) return;
-      if (!found.length) {
-        setError("Couldn't come up with questions for this role. Try again.");
-        setStatus("error");
-        return;
+      if (!expansionStartedRef.current) {
+        expansionStartedRef.current = true;
+        startExperienceExpansion({ id: expansionIdRef.current, position, company, promptId });
       }
-      startExperienceExpansion({
-        id: expansionIdRef.current,
-        position,
-        company,
-        promptId: openingPromptId,
-      });
-      rememberQuestions(found, 1, openingPromptId);
-      setQuestions(withRuntimeState(found));
-      setRound(1);
-      setStatus("answering");
+      const [metricId] = recordQuestionsPresented(
+        { experienceExpansionId: expansionIdRef.current },
+        [{ promptId, question: turn.question, options: turn.examples, round: finishedTurns.length + 1 }]
+      );
+      setCurrent({ ...turn, metricId });
+      setDraft("");
+      setStatus("asking");
     } catch (err) {
       if (cancelledRef.current) return;
-      setError(err instanceof Error ? err.message : "Could not start the questions.");
+      setError(err instanceof Error ? err.message : "Couldn't come up with the next question.");
       setStatus("error");
     }
   };
 
-  const runFollowups = async (currentTranscript, nextRound) => {
-    retryRef.current = () => runFollowups(currentTranscript, nextRound);
+  const runSuggestions = async (finishedTurns) => {
+    retryRef.current = () => runSuggestions(finishedTurns);
     setStatus("loading");
-    setLoadingKind("followups");
+    setLoadingKind("suggestions");
     setError("");
     try {
-      let followupPromptId = null;
-      const result = await loadFollowups({
+      let promptId = null;
+      const result = await suggest({
         position,
         company,
-        description,
+        description: [description, ...keptRef.current].filter((text) => text?.trim()).join("\n"),
         tenureLabel,
-        transcript: currentTranscript,
-        round: nextRound,
+        transcript: toTranscript(finishedTurns),
         runId: expansionIdRef.current,
         onPromptId: (id) => {
-          followupPromptId = id;
+          promptId = id;
         },
       });
       if (cancelledRef.current) return;
-      // Model says it knows enough, or the batch came back empty — write it up.
-      if (result.enough || !result.questions.length) {
-        runCompose(currentTranscript);
-        return;
-      }
-      rememberQuestions(result.questions, nextRound, followupPromptId);
-      setQuestions(withRuntimeState(result.questions));
-      setRound(nextRound);
-      setStatus("answering");
-    } catch (err) {
-      if (cancelledRef.current) return;
-      setError(err instanceof Error ? err.message : "Could not come up with more questions.");
-      setStatus("error");
-    }
-  };
-
-  const runCompose = async (finalTranscript) => {
-    retryRef.current = () => runCompose(finalTranscript);
-    setStatus("loading");
-    setLoadingKind("compose");
-    setError("");
-    try {
-      let composePromptId = null;
-      const composed = await composeBullets({
-        position,
-        company,
-        description,
-        tenureLabel,
-        transcript: finalTranscript,
-        runId: expansionIdRef.current,
-        onPromptId: (id) => {
-          composePromptId = id;
-        },
-      });
-      if (cancelledRef.current) return;
-      if (!composed.length) {
-        setError("Couldn't write anything from those answers. Answer a bit more, then try again.");
-        setStatus("error");
-        return;
-      }
-      // Reaching the write-up is where the interview ends, so this is where the
-      // round count is final.
-      recordExpansionRounds(expansionIdRef.current, round);
-      setBullets(
-        composed.map((text) => ({
-          text,
+      recordExpansionRounds(expansionIdRef.current, finishedTurns.length);
+      setSuggestions(
+        result.suggestions.map((entry) => ({
+          ...entry,
           resolution: null,
           suggestionId: recordSuggestionPresented(
             { experienceExpansionId: expansionIdRef.current },
-            { suggestion: text, promptId: composePromptId }
+            { suggestion: entry.bullet, promptId }
           ),
         }))
       );
+      setLeftOut(result.leftOut);
       setStatus("review");
     } catch (err) {
       if (cancelledRef.current) return;
-      setError(err instanceof Error ? err.message : "Could not write up your answers.");
+      setError(err instanceof Error ? err.message : "Couldn't write suggestions from your answers.");
       setStatus("error");
     }
   };
 
-  const retry = () => {
-    retryRef.current?.();
-  };
-
-  const updateQuestion = (questionId, patch) => {
-    setQuestions((current) =>
-      current.map((question) =>
-        question.id === questionId ? { ...question, ...patch } : question
-      )
-    );
-  };
-
-  // Functional update so rapid toggles never overwrite each other with a stale list.
-  const toggleQuestionChoice = (questionId, option) => {
-    setQuestions((current) =>
-      current.map((question) => {
-        if (question.id !== questionId) return question;
-        const choices = question.choices.includes(option)
-          ? question.choices.filter((entry) => entry !== option)
-          : [...question.choices, option];
-        return { ...question, choices, skipped: false, usingCustom: false };
-      })
-    );
-  };
-
-  const answeredThisRound = collectAnswers(questions);
-  const sessionHasAnswer = transcript.length > 0 || answeredThisRound.length > 0;
-
-  // Settle this round's questions before they leave the screen. Mirrors
-  // collectAnswers: a question left untouched gets no timestamp at all, which
-  // is what distinguishes "ignored" from "explicitly skipped".
-  const recordRoundOutcomes = () => {
-    for (const question of questions) {
-      const id = questionIdsRef.current[question.id];
-      if (!id) continue;
-      if (question.skipped) {
-        recordQuestionSkipped(id);
-      } else if (question.usingCustom && question.customAnswer.trim()) {
-        recordQuestionAnswered(id, { answerText: question.customAnswer.trim() });
-      } else if (question.multiSelect && question.choices.length) {
-        recordQuestionAnswered(id, { selectedOptions: question.choices });
-      } else if (!question.multiSelect && question.choice) {
-        recordQuestionAnswered(id, { selectedOptions: [question.choice] });
-      }
-    }
-  };
-
-  const handleContinue = () => {
-    if (!answeredThisRound.length) return;
-    recordRoundOutcomes();
-    const nextTranscript = [...transcript, ...answeredThisRound];
-    setTranscript(nextTranscript);
-    if (round >= MAX_QA_ROUNDS) {
-      runCompose(nextTranscript);
+  // Settle the question on screen and return the finished thread.
+  const finishCurrent = ({ answer = "", skipped = false, fromExample = false }) => {
+    if (!current) return turns;
+    if (skipped) {
+      recordQuestionSkipped(current.metricId);
     } else {
-      runFollowups(nextTranscript, round + 1);
+      recordQuestionAnswered(
+        current.metricId,
+        fromExample ? { selectedOptions: [answer] } : { answerText: answer }
+      );
     }
+    const { metricId: _metricId, ...turn } = current;
+    const next = [...turns, { ...turn, answer, skipped }];
+    setTurns(next);
+    setCurrent(null);
+    setDraft("");
+    return next;
   };
 
-  const handleWriteUpNow = () => {
-    recordRoundOutcomes();
-    const nextTranscript = answeredThisRound.length
-      ? [...transcript, ...answeredThisRound]
-      : transcript;
-    setTranscript(nextTranscript);
-    runCompose(nextTranscript);
+  const answeredCount = turns.filter((turn) => !turn.skipped).length;
+  const canWrapUp = answeredCount > 0 || Boolean(draft.trim());
+
+  const handleSend = (text, fromExample = false) => {
+    const answer = text.trim();
+    if (!answer) return;
+    runQuestion(finishCurrent({ answer, fromExample }));
   };
 
-  const handleAskMore = () => {
-    runFollowups(transcript, Math.min(round + 1, MAX_QA_ROUNDS));
+  const handleSkip = () => {
+    runQuestion(finishCurrent({ skipped: true }));
   };
 
-  const handleAcceptBullet = (index) => {
-    onAcceptBullet(bullets[index].text);
-    recordSuggestionAccepted(bullets[index].suggestionId);
-    setBullets((current) =>
-      current.map((bullet, i) => (i === index ? { ...bullet, resolution: "accepted" } : bullet))
-    );
+  // A typed-but-unsent answer counts; an untouched question is left unanswered.
+  const handleWrapUp = () => {
+    if (!canWrapUp) return;
+    const finished = draft.trim() ? finishCurrent({ answer: draft.trim() }) : turns;
+    setCurrent(null);
+    runSuggestions(finished);
   };
 
-  const handleRejectBullet = (index) => {
-    recordSuggestionRejected(bullets[index].suggestionId);
-    setBullets((current) =>
-      current.map((bullet, i) => (i === index ? { ...bullet, resolution: "rejected" } : bullet))
-    );
+  const handleKeepInterviewing = () => {
+    runQuestion(turns);
+  };
+
+  const resolveSuggestion = (index, resolution) => {
+    const entry = suggestions[index];
+    if (resolution === "accepted") {
+      onAcceptBullet(entry.bullet);
+      keptRef.current = [...keptRef.current, entry.bullet];
+      recordSuggestionAccepted(entry.suggestionId);
+    } else {
+      recordSuggestionRejected(entry.suggestionId);
+    }
+    setSuggestions((list) => list.map((item, i) => (i === index ? { ...item, resolution } : item)));
   };
 
   const loadingCopy =
-    loadingKind === "opening"
-      ? "Reviewing your current experience details…"
-      : loadingKind === "followups"
-        ? "Creating followup questions…"
-        : "Writing this up from your answers…";
-
-  const allBulletsResolved =
-    bullets.length > 0 && bullets.every((bullet) => bullet.resolution);
-  const anyAccepted = bullets.some((bullet) => bullet.resolution === "accepted");
+    loadingKind === "question"
+      ? turns.length
+        ? "Thinking of the next question…"
+        : "Reading your work experience…"
+      : "Writing suggestions from your answers…";
 
   return (
     <div
@@ -366,158 +246,140 @@ export function EnrichExperience({
         </button>
       </div>
 
+      <p className="mt-2 text-sm text-neutral-400">{INTERVIEW_INTRO}</p>
+
+      {turns.length > 0 && (
+        <ol className="mt-3 space-y-3 border-l border-neutral-800 pl-3">
+          {turns.map((turn, index) => (
+            <li key={index} className="text-sm">
+              <p className="text-neutral-400">{turn.question}</p>
+              <p className={`mt-0.5 ${turn.skipped ? "italic text-neutral-500" : "text-neutral-200"}`}>
+                {turn.skipped ? "Skipped" : turn.answer}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
+
       {status === "loading" && (
-        <p className="mt-2 animate-pulse text-sm text-neutral-400">{loadingCopy}</p>
+        <p className="mt-3 animate-pulse text-sm text-neutral-400">{loadingCopy}</p>
       )}
 
       {status === "error" && (
-        <div className="mt-2">
+        <div className="mt-3">
           <p className="text-sm text-red-400">{error}</p>
-          <button
-            type="button"
-            onClick={retry}
-            className="mt-3 rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800"
-          >
-            Try again
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" onClick={() => retryRef.current?.()} className={secondaryButtonClass}>
+              Try again
+            </button>
+            {loadingKind === "question" && answeredCount > 0 && (
+              <button type="button" onClick={() => runSuggestions(turns)} className={secondaryButtonClass}>
+                Wrap up
+              </button>
+            )}
+            {loadingKind === "suggestions" && (
+              <button type="button" onClick={handleKeepInterviewing} className={secondaryButtonClass}>
+                Keep interviewing
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      {status === "answering" && (
-        <>
-          <div className="mt-3 space-y-4">
-            {questions.map((question) => (
-              <div key={question.id}>
-                <p className="text-sm font-medium text-neutral-200">
-                  {question.question}
-                  {question.multiSelect && (
-                    <span className="ml-1.5 text-xs font-normal text-neutral-500">
-                      Select all that apply.
-                    </span>
-                  )}
-                </p>
-                {question.helper && (
-                  <p className="mt-0.5 text-xs text-neutral-500">{question.helper}</p>
-                )}
-                <div className="mt-1.5 flex flex-wrap gap-2">
-                  {question.options.map((option, index) => {
-                    const active = question.multiSelect
-                      ? question.choices.includes(option)
-                      : !question.usingCustom && question.choice === option;
-                    return (
-                      <button
-                        key={index}
-                        type="button"
-                        onClick={() =>
-                          question.multiSelect
-                            ? toggleQuestionChoice(question.id, option)
-                            : updateQuestion(question.id, {
-                                choice: option,
-                                usingCustom: false,
-                                skipped: false,
-                              })
-                        }
-                        className={chipClass(active)}
-                      >
-                        {option}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateQuestion(question.id, { usingCustom: true, skipped: false })
-                    }
-                    className={chipClass(question.usingCustom)}
-                  >
-                    Something else…
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateQuestion(question.id, {
-                        skipped: true,
-                        usingCustom: false,
-                        choice: null,
-                        choices: [],
-                      })
-                    }
-                    className={chipClass(question.skipped)}
-                  >
-                    Skip
-                  </button>
-                </div>
-                {question.usingCustom && (
-                  <input
-                    type="text"
-                    value={question.customAnswer}
-                    onChange={(e) =>
-                      updateQuestion(question.id, { customAnswer: e.target.value })
-                    }
-                    placeholder="In your own words..."
-                    className="mt-2 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
-                  />
-                )}
-              </div>
-            ))}
-          </div>
+      {status === "asking" && current && (
+        <div ref={currentRef} className="mt-4 scroll-my-24 space-y-2">
+          {current.heard && <p className="text-sm text-neutral-400">{current.heard}</p>}
+          {current.context && <p className="text-sm text-neutral-300">{current.context}</p>}
+          <p className="text-base font-semibold text-neutral-100">{current.question}</p>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          {current.examples.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {current.examples.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => handleSend(example, true)}
+                  className={chipClass}
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                handleSend(draft);
+              }
+            }}
+            rows={2}
+            placeholder="Or answer in your own words…"
+            className="w-full resize-none rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+          />
+
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={handleContinue}
-              disabled={!answeredThisRound.length}
+              onClick={() => handleSend(draft)}
+              disabled={!draft.trim()}
               className="rounded-lg border border-violet-500/50 bg-violet-500/15 px-3 py-2 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-50 dark:text-violet-200"
             >
-              {round >= MAX_QA_ROUNDS ? "Write it up" : "Continue"}
+              Send
+            </button>
+            <button type="button" onClick={handleSkip} className={secondaryButtonClass}>
+              Skip
             </button>
             <button
               type="button"
-              onClick={handleWriteUpNow}
-              disabled={!sessionHasAnswer}
-              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={handleWrapUp}
+              disabled={!canWrapUp}
+              title={canWrapUp ? "Get suggestions from your answers." : "Answer at least one question first."}
+              className={`${secondaryButtonClass} ml-auto`}
             >
-              Write it up now
+              Wrap up
             </button>
           </div>
-        </>
+        </div>
       )}
 
       {status === "review" && (
-        <div className="mt-3 space-y-3">
+        <div className="mt-4 space-y-3">
           <p className="text-sm font-medium text-neutral-200">
-            Here's what I heard — add what fits.
+            Here's what we'd add. Keep what fits.
           </p>
 
-          {bullets.map((bullet, index) =>
-            bullet.resolution === "accepted" ? (
+          {suggestions.map((entry, index) =>
+            entry.resolution === "accepted" ? (
               <p key={index} className="text-sm text-emerald-500 dark:text-emerald-400">
-                ✓ Added “{bullet.text}”
+                ✓ Added “{entry.bullet}”
               </p>
-            ) : bullet.resolution === "rejected" ? (
+            ) : entry.resolution === "rejected" ? (
               <p key={index} className="text-sm text-neutral-500">
-                Skipped “{bullet.text}”
+                Skipped “{entry.bullet}”
               </p>
             ) : (
-              <div
-                key={index}
-                className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-3"
-              >
-                <p className="text-xs uppercase tracking-widest text-neutral-500">
-                  Suggested detail
-                </p>
-                <p className="mt-1 text-sm text-neutral-100">{bullet.text}</p>
+              <div key={index} className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-3">
+                {entry.problem && (
+                  <p className="text-xs font-semibold uppercase tracking-widest text-violet-600 dark:text-violet-300">
+                    {entry.problem}
+                  </p>
+                )}
+                <p className="mt-1 text-sm text-neutral-100">{entry.bullet}</p>
                 <div className="mt-3 flex gap-2">
                   <button
                     type="button"
-                    onClick={() => handleAcceptBullet(index)}
+                    onClick={() => resolveSuggestion(index, "accepted")}
                     className="rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/25 dark:text-emerald-200"
                   >
-                    Add to description
+                    Keep
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleRejectBullet(index)}
+                    onClick={() => resolveSuggestion(index, "rejected")}
                     className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
                   >
                     Skip
@@ -527,22 +389,23 @@ export function EnrichExperience({
             )
           )}
 
+          {leftOut.length > 0 && (
+            <div className="rounded-lg border border-neutral-800 p-3">
+              <p className="text-xs uppercase tracking-widest text-neutral-500">Left out on purpose</p>
+              <ul className="mt-1 list-disc space-y-1 pl-4 text-sm text-neutral-400">
+                {leftOut.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            {round < MAX_QA_ROUNDS && (
-              <button
-                type="button"
-                onClick={handleAskMore}
-                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
-              >
-                Ask me a bit more
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
-            >
-              {allBulletsResolved ? (anyAccepted ? "Done" : "Close") : "Close"}
+            <button type="button" onClick={handleKeepInterviewing} className={secondaryButtonClass}>
+              Keep interviewing
+            </button>
+            <button type="button" onClick={onClose} className={secondaryButtonClass}>
+              Done
             </button>
           </div>
         </div>

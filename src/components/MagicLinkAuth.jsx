@@ -5,8 +5,10 @@ import { createClient } from "../lib/supabase/client";
 import {
   describeRequestError,
   describeVerifyError,
+  isProductionHost,
   isUnknownAccountError,
   readVerification,
+  readVerificationFromLink,
   withoutVerification,
 } from "../lib/magicLink";
 import {
@@ -271,6 +273,8 @@ export default function MagicLinkAuth({ mode, query = "" }) {
           >
             Use a different email
           </button>
+
+          <PastedLinkSignIn />
         </div>
       </Shell>
     );
@@ -326,8 +330,75 @@ export default function MagicLinkAuth({ mode, query = "" }) {
             {copy.crossLabel}
           </a>
         </p>
+
+        <PastedLinkSignIn />
       </div>
     </Shell>
+  );
+}
+
+// Sign-in emails always link to production. On a preview or local build, this
+// takes the link pasted from the email and finishes signing in here instead, by
+// reloading this page with the same token_hash the link carries. Hidden on
+// production, where the emailed link already lands on the right host.
+function PastedLinkSignIn() {
+  // Read after mount: the server render can't know the host, and the first
+  // client paint has to match it.
+  const [show, setShow] = useState(false);
+  const [link, setLink] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setShow(!isProductionHost(window.location.hostname));
+  }, []);
+
+  if (!show) return null;
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    const verification = readVerificationFromLink(link);
+    if (!verification) {
+      setError("That doesn't look like a sign-in link. Copy the whole link from the email.");
+      return;
+    }
+    const params = new URLSearchParams({
+      token_hash: verification.tokenHash,
+      type: verification.type,
+    });
+    window.location.assign(`/login?${params}`);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-6 space-y-2 border-t border-neutral-800 pt-4">
+      <label className="block">
+        <span className="mb-1 block text-xs text-neutral-500">
+          Testing on {window.location.host}? The emailed link opens the live site. Paste it here to
+          sign in on this one.
+        </span>
+        <input
+          type="text"
+          value={link}
+          onChange={(event) => {
+            setLink(event.target.value);
+            setError("");
+          }}
+          placeholder="https://www.1resume.app/login?token_hash=…"
+          className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500"
+        />
+      </label>
+      {error && (
+        <p role="alert" className="text-sm text-red-400">
+          {error}
+        </p>
+      )}
+      <button
+        type="submit"
+        disabled={!link.trim()}
+        className="w-full rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        Sign in here
+      </button>
+    </form>
   );
 }
 

@@ -119,7 +119,7 @@ export async function fetchProviderModelOptions(provider) {
   };
 }
 
-// First chat provider with a server API key set (xAI → Anthropic → OpenAI →
+// First chat provider with a server API key set (OpenAI → xAI → Anthropic →
 // Google). Used on load so the default picker lands on a usable provider.
 export async function fetchPreferredLlmProvider() {
   const data = await fetchApiJson("/api/llm/models");

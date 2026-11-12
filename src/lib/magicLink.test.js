@@ -4,6 +4,8 @@ import {
   describeVerifyError,
   isUnknownAccountError,
   readVerification,
+  readVerificationFromLink,
+  isProductionHost,
   withoutVerification,
 } from "./magicLink";
 
@@ -127,5 +129,42 @@ describe("isUnknownAccountError", () => {
   it("does not fire on unrelated failures", () => {
     expect(isUnknownAccountError(rateLimited)).toBe(false);
     expect(isUnknownAccountError(null)).toBe(false);
+  });
+});
+
+describe("readVerificationFromLink", () => {
+  it("reads the token from a production link pasted on a preview", () => {
+    expect(
+      readVerificationFromLink("https://www.1resume.app/login?token_hash=abc123&type=magiclink")
+    ).toEqual({ tokenHash: "abc123", type: "magiclink" });
+  });
+
+  it("tolerates surrounding text, trailing punctuation, and &amp; from the email source", () => {
+    expect(
+      readVerificationFromLink(
+        "  Sign in: https://www.1resume.app/login?token_hash=abc123&amp;type=signup).  "
+      )
+    ).toEqual({ tokenHash: "abc123", type: "signup" });
+  });
+
+  it("reads the legacy /auth/callback form", () => {
+    expect(
+      readVerificationFromLink("https://www.1resume.app/auth/callback?type=magiclink&token_hash=xyz")
+    ).toEqual({ tokenHash: "xyz", type: "magiclink" });
+  });
+
+  it("returns null for text that isn't a sign-in link", () => {
+    expect(readVerificationFromLink("")).toBeNull();
+    expect(readVerificationFromLink("https://www.1resume.app/login")).toBeNull();
+    expect(readVerificationFromLink("token_hash=abc")).toBeNull();
+  });
+});
+
+describe("isProductionHost", () => {
+  it("is true only for the live site", () => {
+    expect(isProductionHost("www.1resume.app")).toBe(true);
+    expect(isProductionHost("1resume.app")).toBe(true);
+    expect(isProductionHost("quick-resume-git-claude-x.vercel.app")).toBe(false);
+    expect(isProductionHost("localhost")).toBe(false);
   });
 });

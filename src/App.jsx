@@ -156,16 +156,10 @@ import {
   replaceSentence,
 } from "./lib/clarifyExperience";
 import {
-  buildOpeningQuestionsPrompt,
-  validateOpeningQuestions,
-  buildFollowupQuestionsPrompt,
-  validateFollowupQuestions,
-  buildComposePrompt,
-  validateComposedBullets,
-  MAX_QA_ROUNDS,
   appendDetailToDescription,
   isSparseDescription,
 } from "./lib/enrichExperience";
+import { askInterviewQuestion, suggestFromInterview } from "./lib/interviewMe";
 import { buildProfileExportPayload } from "./lib/exportProfile";
 import { parseProfileExportFile } from "./lib/importProfile";
 import { printResumePages } from "./lib/exportPdf";
@@ -686,7 +680,7 @@ export default function App({ initialData = null, userId = null }) {
 
   // The server owns the provider keys, so every provider's model list is
   // fetchable from first load — one pass on mount is all it takes. Also pick
-  // the first provider that has a key (xAI → Anthropic → OpenAI → Google) so
+  // the first provider that has a key (OpenAI → xAI → Anthropic → Google) so
   // the default isn't Gemini when only another key is configured.
   useEffect(() => {
     let cancelled = false;
@@ -1273,56 +1267,44 @@ export default function App({ initialData = null, userId = null }) {
     }, 3000);
   }, []);
 
-  // Ask the model for the first few dead-simple questions about what this person
-  // actually does day to day. Grounded in the role, not job-posting boilerplate.
-  const handleLoadOpeningQuestions = useCallback(
-    async ({ position, company, description, tenureLabel, runId, onPromptId }) => {
-      const parsed = await callLlmForJson(
-        llmSettings,
-        buildOpeningQuestionsPrompt({ position, company, description, tenure: tenureLabel }),
-        null,
-        { runId, onPromptId, feature: "experience_expansion" }
-      );
-      return validateOpeningQuestions(parsed);
-    },
-    [llmSettings]
-  );
-
-  // Ask the next questions that branch off what the person has answered so far,
-  // or get back an "enough" signal that we know enough to write it up.
-  const handleLoadFollowupQuestions = useCallback(
-    async ({ position, company, description, tenureLabel, transcript, round, runId, onPromptId }) => {
-      const parsed = await callLlmForJson(
-        llmSettings,
-        buildFollowupQuestionsPrompt({
-          position,
-          company,
-          description,
-          tenure: tenureLabel,
-          transcript,
-          round,
-          maxRounds: MAX_QA_ROUNDS,
+  // Bind callLlmForJson for one Interview me call. Repairs are logged against
+  // the original prompt with purpose "repair", so prompt_id stays on the prompt
+  // that needed fixing.
+  const interviewCaller = useCallback(
+    ({ runId, onPromptId }) =>
+      (prompt, { repairOf } = {}) =>
+        callLlmForJson(llmSettings, prompt, null, {
+          runId,
+          feature: "experience_expansion",
+          ...(repairOf ? { purpose: "repair", attributePrompt: repairOf } : { onPromptId }),
         }),
-        null,
-        { runId, onPromptId, feature: "experience_expansion" }
-      );
-      return validateFollowupQuestions(parsed, { round });
-    },
     [llmSettings]
   );
 
-  // Turn the whole Q&A transcript into 1-3 plainspoken resume bullets.
-  const handleComposeEnrichedBullets = useCallback(
-    async ({ position, company, description, tenureLabel, transcript, runId, onPromptId }) => {
-      const parsed = await callLlmForJson(
-        llmSettings,
-        buildComposePrompt({ position, company, description, tenure: tenureLabel, transcript }),
-        null,
-        { runId, onPromptId, feature: "experience_expansion" }
-      );
-      return validateComposedBullets(parsed);
-    },
-    [llmSettings]
+  // The next single question, tied back to what the person has said so far.
+  const handleAskInterviewQuestion = useCallback(
+    ({ position, company, description, tenureLabel, transcript, runId, onPromptId }) =>
+      askInterviewQuestion(interviewCaller({ runId, onPromptId }), {
+        position,
+        company,
+        description,
+        tenure: tenureLabel,
+        transcript,
+      }),
+    [interviewCaller]
+  );
+
+  // Wrap up: turn the conversation into business-problem suggestions.
+  const handleSuggestFromInterview = useCallback(
+    ({ position, company, description, tenureLabel, transcript, runId, onPromptId }) =>
+      suggestFromInterview(interviewCaller({ runId, onPromptId }), {
+        position,
+        company,
+        description,
+        tenure: tenureLabel,
+        transcript,
+      }),
+    [interviewCaller]
   );
 
   // Append an accepted bullet to the stored description and confirm with a toast.
@@ -1397,7 +1379,7 @@ export default function App({ initialData = null, userId = null }) {
       const provider = llmSettings.provider;
       let cheapestModel = "";
       if (provider === "openai") {
-        cheapestModel = "gpt-5.4-nano";
+        cheapestModel = "gpt-5.6-luna";
       } else if (provider === "anthropic") {
         cheapestModel = "claude-haiku-4-5";
       } else if (provider === "xai") {
@@ -2474,9 +2456,8 @@ export default function App({ initialData = null, userId = null }) {
                         company={item.company}
                         description={item.description}
                         tenureLabel={tenureLabel}
-                        loadOpening={handleLoadOpeningQuestions}
-                        loadFollowups={handleLoadFollowupQuestions}
-                        composeBullets={handleComposeEnrichedBullets}
+                        askQuestion={handleAskInterviewQuestion}
+                        suggest={handleSuggestFromInterview}
                         onAcceptBullet={(bullet) => handleAppendDetailToWork(item.id, bullet)}
                         onClose={() => setEnrichingWorkId(null)}
                       />
