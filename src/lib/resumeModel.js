@@ -230,6 +230,10 @@ export function createWorkHistoryItem(values = {}) {
     endMonth: normalizeWorkMonth(values.endMonth ?? endParts.month),
     endYear: normalizeWorkYear(values.endYear ?? endParts.year),
     description: values.description ?? "",
+    // When the guided Polish wording / Interview me passes finished (or
+    // skipped) this role; "" until then. See lib/happyPath.
+    polishedAt: values.polishedAt ?? "",
+    interviewedAt: values.interviewedAt ?? "",
   };
 }
 

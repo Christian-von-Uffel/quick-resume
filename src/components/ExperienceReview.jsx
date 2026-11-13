@@ -33,6 +33,7 @@ export function ExperienceReview({
   reviewSentences,
   proposeRewrite,
   onAcceptSentence,
+  onComplete,
   onClose,
 }) {
   // "loading" | "ready" | "empty" | "error"
@@ -221,6 +222,16 @@ export function ExperienceReview({
       });
     }
   };
+
+  // The review is finished once it found nothing to fix or every flagged
+  // sentence was accepted or kept; that completes this role's Polish pass.
+  const isFinished =
+    status === "empty" || (status === "ready" && items.every((item) => item.resolution));
+  useEffect(() => {
+    if (isFinished) onComplete?.();
+    // onComplete is a fresh closure each render; only the transition matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFinished]);
 
   const handleAccept = (item) => {
     onAcceptSentence(item.sentence, item.proposal);

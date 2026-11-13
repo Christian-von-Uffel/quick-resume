@@ -35,6 +35,7 @@ export function EnrichExperience({
   askQuestion,
   suggest,
   onAcceptBullet,
+  onComplete,
   onClose,
 }) {
   // "loading" | "asking" | "review" | "error"
@@ -43,6 +44,10 @@ export function EnrichExperience({
   const [loadingKind, setLoadingKind] = useState("question");
   const [turns, setTurns] = useState([]); // finished { heard, context, question, examples, answer, skipped }
   const [current, setCurrent] = useState(null); // the question on screen
+  // The intro shows on its own until the person taps Start; the first
+  // question loads behind it.
+  const [started, setStarted] = useState(false);
+  const startedRef = useRef(false);
   const [draft, setDraft] = useState("");
   const [suggestions, setSuggestions] = useState([]); // [{ problem, bullet, resolution, suggestionId }]
   const [leftOut, setLeftOut] = useState([]);
@@ -109,11 +114,8 @@ export function EnrichExperience({
         expansionStartedRef.current = true;
         startExperienceExpansion({ id: expansionIdRef.current, position, company, promptId });
       }
-      const [metricId] = recordQuestionsPresented(
-        { experienceExpansionId: expansionIdRef.current },
-        [{ promptId, question: turn.question, options: turn.examples, round: finishedTurns.length + 1 }]
-      );
-      setCurrent({ ...turn, metricId });
+      const next = { ...turn, promptId, round: finishedTurns.length + 1, metricId: null };
+      setCurrent(startedRef.current ? markPresented(next) : next);
       setDraft("");
       setStatus("asking");
     } catch (err) {
@@ -121,6 +123,22 @@ export function EnrichExperience({
       setError(err instanceof Error ? err.message : "Couldn't come up with the next question.");
       setStatus("error");
     }
+  };
+
+  // A question counts as presented once it's on screen, not when it loads
+  // behind the intro.
+  const markPresented = (turn) => {
+    const [metricId] = recordQuestionsPresented(
+      { experienceExpansionId: expansionIdRef.current },
+      [{ promptId: turn.promptId, question: turn.question, options: turn.examples, round: turn.round }]
+    );
+    return { ...turn, metricId };
+  };
+
+  const handleStart = () => {
+    startedRef.current = true;
+    setStarted(true);
+    if (current && !current.metricId) setCurrent(markPresented(current));
   };
 
   const runSuggestions = async (finishedTurns) => {
@@ -173,7 +191,7 @@ export function EnrichExperience({
         fromExample ? { selectedOptions: [answer] } : { answerText: answer }
       );
     }
-    const { metricId: _metricId, ...turn } = current;
+    const { metricId: _metricId, promptId: _promptId, round: _round, ...turn } = current;
     const next = [...turns, { ...turn, answer, skipped }];
     setTurns(next);
     setCurrent(null);
@@ -246,9 +264,20 @@ export function EnrichExperience({
         </button>
       </div>
 
-      <p className="mt-2 text-sm text-neutral-400">{INTERVIEW_INTRO}</p>
+      {!started && (
+        <div className="mt-2 space-y-3">
+          <p className="text-sm text-neutral-300">{INTERVIEW_INTRO}</p>
+          <button
+            type="button"
+            onClick={handleStart}
+            className="rounded-lg border border-violet-500/50 bg-violet-500/15 px-3 py-2 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-500/25 dark:text-violet-200"
+          >
+            Start
+          </button>
+        </div>
+      )}
 
-      {turns.length > 0 && (
+      {started && turns.length > 0 && (
         <ol className="mt-3 space-y-3 border-l border-neutral-800 pl-3">
           {turns.map((turn, index) => (
             <li key={index} className="text-sm">
@@ -261,11 +290,11 @@ export function EnrichExperience({
         </ol>
       )}
 
-      {status === "loading" && (
+      {started && status === "loading" && (
         <p className="mt-3 animate-pulse text-sm text-neutral-400">{loadingCopy}</p>
       )}
 
-      {status === "error" && (
+      {started && status === "error" && (
         <div className="mt-3">
           <p className="text-sm text-red-400">{error}</p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -286,7 +315,7 @@ export function EnrichExperience({
         </div>
       )}
 
-      {status === "asking" && current && (
+      {started && status === "asking" && current && (
         <div ref={currentRef} className="mt-4 scroll-my-24 space-y-2">
           {current.heard && <p className="text-sm text-neutral-400">{current.heard}</p>}
           {current.context && <p className="text-sm text-neutral-300">{current.context}</p>}
@@ -404,7 +433,14 @@ export function EnrichExperience({
             <button type="button" onClick={handleKeepInterviewing} className={secondaryButtonClass}>
               Keep interviewing
             </button>
-            <button type="button" onClick={onClose} className={secondaryButtonClass}>
+            <button
+              type="button"
+              onClick={() => {
+                onComplete?.();
+                onClose();
+              }}
+              className={secondaryButtonClass}
+            >
               Done
             </button>
           </div>

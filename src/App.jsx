@@ -117,6 +117,8 @@ import { PipelineSteps } from "./components/PipelineSteps";
 import { SkillsChecklist } from "./components/SkillsChecklist";
 import { GapRow, LongestGapBanner } from "./components/GapNotice";
 import Onboarding from "./components/Onboarding";
+import { NextStepBar } from "./components/NextStepBar";
+import { EMPTY_JOB_PROGRESS, getNextPathStep, getStageStates, jobProgressFor } from "./lib/happyPath";
 import {
   importResume,
   coerceImportedProfile,
@@ -314,6 +316,11 @@ export default function App({ initialData = null, userId = null }) {
   // Which detail's skill triggered the "add a missing position" modal (null = closed)
   const [addPositionForSkill, setAddPositionForSkill] = useState(null);
   const [newPositionDraft, setNewPositionDraft] = useState(EMPTY_POSITION_DRAFT);
+  // This session's progress through the job steps of the happy path, keyed by
+  // the job description it belongs to (lib/happyPath).
+  const [jobProgress, setJobProgress] = useState(EMPTY_JOB_PROGRESS);
+  const jobDescriptionInputRef = useRef(null);
+  const missingQuestionsRef = useRef(null);
   const [isImporting, setIsImporting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFindingMissingExperience, setIsFindingMissingExperience] = useState(false);
@@ -570,6 +577,20 @@ export default function App({ initialData = null, userId = null }) {
       ),
     [dismissedMissingExperienceSkills, missingExperienceDetails]
   );
+  // The happy path's next step. Experience screens walk the whole path; the
+  // Create and Resumes screens start at the job steps, since the person has
+  // already chosen to work on a job there.
+  const pathInputs = {
+    workHistory: sortedWorkHistory,
+    jobDescription: generationInstructions,
+    jobProgress,
+    openQuestions: visibleMissingExperienceDetails.length,
+    jobUrl: scrapeUrl,
+  };
+  const experiencePathStep = getNextPathStep(pathInputs);
+  const jobPathStep = getNextPathStep(pathInputs, { from: "job" });
+  const updateJobProgress = (jobText, changes) =>
+    setJobProgress((current) => ({ ...jobProgressFor(current, jobText), ...changes }));
   const skillsChecklist = useMemo(
     () =>
       buildSkillsChecklist({
@@ -1490,6 +1511,7 @@ export default function App({ initialData = null, userId = null }) {
       setMissingExperienceElaborations({});
       setMissingExperienceSaveToast("");
       setMissingExperienceStepIndex(-1);
+      updateJobProgress(jobDescription, { checked: true, answered: false });
       const coveredNote = covered.length
         ? `Your work history already shows ${covered.length} thing${covered.length === 1 ? "" : "s"} this job asks for. `
         : "";
@@ -1973,8 +1995,10 @@ export default function App({ initialData = null, userId = null }) {
       setMarkdown(nextMarkdown);
       setGenerateStepIndex(-1);
       setGenerateStatus("Generated a new resume.");
+      updateJobProgress(generationInstructions, { resumeId: generatedResume.id, downloaded: false });
+      // Land on the preview: the next step is checking it and downloading the PDF.
       setActiveMainTab("resume");
-      setActiveResumeTab("editor");
+      setActiveResumeTab("preview");
 
       // Title and company are copied, not looked up, so the row still says what
       // this resume was aimed at after it's renamed or deleted.
@@ -2018,7 +2042,95 @@ export default function App({ initialData = null, userId = null }) {
     // download can be observed at all. We can't know whether the user went
     // through with the print dialog — this counts asking for the PDF.
     recordResumeDownload({ resumeId: selectedResume?.id ?? null });
+    // Downloading the resume made for the current job finishes that step.
+    setJobProgress((current) =>
+      current.resumeId && current.resumeId === selectedResume?.id ? { ...current, downloaded: true } : current
+    );
   }, [markdown, profile.name, selectedResume]);
+
+  // ── Happy path ───────────────────────────────────────────────────────────
+  // Stamp a role as finished with one guided pass ("polishedAt" or
+  // "interviewedAt"). Finishing the panel and skipping it both count; a role
+  // keeps its first stamp, so redoing a pass later doesn't re-save.
+  const handleMarkRoleStep = useCallback((workId, field) => {
+    setWorkHistory((current) =>
+      current.map((item) =>
+        item.id === workId && !item[field] ? { ...item, [field]: new Date().toISOString() } : item
+      )
+    );
+  }, []);
+
+  // Open a role with its Polish wording or Interview me panel already running.
+  const handleStartRoleStep = (pass, workId) => {
+    handleFocusWorkHistoryRole(workId);
+    setReviewingWorkId(pass === "polish" ? workId : null);
+    setEnrichingWorkId(pass === "interview" ? workId : null);
+  };
+
+  const handlePathPrimary = (step) => {
+    switch (step.key) {
+      case "polish":
+      case "interview":
+        handleStartRoleStep(step.key, step.work.id);
+        break;
+      case "job":
+        setActiveMainTab("ai");
+        setGenerationSourceType("text");
+        // Wait for the Create screen to show before focusing its box.
+        requestAnimationFrame(() => jobDescriptionInputRef.current?.focus());
+        break;
+      case "check":
+        setActiveMainTab("ai");
+        handleFindMissingExperienceDetails();
+        break;
+      case "answer":
+        setActiveMainTab("ai");
+        requestAnimationFrame(() =>
+          missingQuestionsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+        );
+        break;
+      case "generate":
+        setActiveMainTab("ai");
+        handleGenerateMarkdown();
+        break;
+      case "download":
+        if (activeMainTab === "resume" && selectedResumeId === step.resumeId) {
+          handleExportPdf();
+        } else {
+          handleSelectResume(step.resumeId);
+          setActiveMainTab("resume");
+          setActiveResumeTab("preview");
+        }
+        break;
+      default:
+        if (step.jobUrl) window.open(step.jobUrl, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const handlePathSkip = (step) => {
+    const jobText = generationInstructions;
+    if (step.key === "polish") handleMarkRoleStep(step.work.id, "polishedAt");
+    else if (step.key === "interview") handleMarkRoleStep(step.work.id, "interviewedAt");
+    else if (step.key === "check") updateJobProgress(jobText, { checked: true, answered: true });
+    else if (step.key === "answer") updateJobProgress(jobText, { answered: true });
+  };
+
+  const pathBusyLabel = isFindingMissingExperience
+    ? "Checking..."
+    : isGenerating
+      ? "Generating..."
+      : "";
+
+  const renderNextStepBar = (step, { onResumesTab = false } = {}) => (
+    <NextStepBar
+      step={step}
+      stageStates={getStageStates(step, sortedWorkHistory)}
+      busyLabel={step.key === "check" || step.key === "generate" ? pathBusyLabel : ""}
+      onPrimary={() => handlePathPrimary(step)}
+      onSkip={() => handlePathSkip(step)}
+      onResumesTab={onResumesTab}
+    />
+  );
 
   const fits = pageCount <= maxPages;
   const lastPage = pages[pageCount - 1];
@@ -2256,6 +2368,11 @@ export default function App({ initialData = null, userId = null }) {
           )}
 
           <div ref={workListRef} className="relative flex-1 overflow-y-auto overscroll-contain p-4 space-y-2 pagefit-scrollbar">
+            {!isImporting && experiencePathStep.key !== "import" && (
+              <div className="sticky -top-4 z-10 -mx-4 -mt-4 bg-neutral-900 px-4 pb-2 pt-4">
+                {renderNextStepBar(experiencePathStep)}
+              </div>
+            )}
             {bannerGap && !workHistorySearch.trim() && (
               <div className={`pb-2 ${openWorkItem ? "max-sm:hidden" : ""}`}>
                 <LongestGapBanner
@@ -2445,6 +2562,7 @@ export default function App({ initialData = null, userId = null }) {
                         onAcceptSentence={(original, replacement) =>
                           handleReplaceSentenceInWork(item.id, original, replacement)
                         }
+                        onComplete={() => handleMarkRoleStep(item.id, "polishedAt")}
                         onClose={() => setReviewingWorkId(null)}
                       />
                     )}
@@ -2459,6 +2577,7 @@ export default function App({ initialData = null, userId = null }) {
                         askQuestion={handleAskInterviewQuestion}
                         suggest={handleSuggestFromInterview}
                         onAcceptBullet={(bullet) => handleAppendDetailToWork(item.id, bullet)}
+                        onComplete={() => handleMarkRoleStep(item.id, "interviewedAt")}
                         onClose={() => setEnrichingWorkId(null)}
                       />
                     )}
@@ -2701,6 +2820,11 @@ export default function App({ initialData = null, userId = null }) {
 
           <div className="flex-1 overflow-y-auto p-4 pagefit-scrollbar">
             <div className="mx-auto max-w-3xl space-y-5">
+              {sortedWorkHistory.length > 0 && (
+                <div className="sticky -top-4 z-10 -mx-4 -mt-4 bg-neutral-900 px-4 pb-1 pt-4">
+                  {renderNextStepBar(jobPathStep)}
+                </div>
+              )}
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -2743,6 +2867,7 @@ export default function App({ initialData = null, userId = null }) {
                       Job description
                     </span>
                     <textarea
+                      ref={jobDescriptionInputRef}
                       value={generationInstructions}
                       onChange={(e) => handleGenerationInstructionsChange(e.target.value)}
                       onPaste={(e) => {
@@ -2868,7 +2993,7 @@ export default function App({ initialData = null, userId = null }) {
                   </div>
                 )}
                 {visibleMissingExperienceDetails.length > 0 && (
-                  <div className="mt-4 space-y-3">
+                  <div ref={missingQuestionsRef} className="mt-4 scroll-mt-44 space-y-3">
                     {visibleMissingExperienceDetails.map((detail) => (
                       <div key={detail.skill} className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-3">
                         {(() => {
@@ -3282,6 +3407,12 @@ export default function App({ initialData = null, userId = null }) {
               </div>
             )}
           </div>
+
+          {selectedResumeId === jobPathStep.resumeId && (
+            <div className="mx-auto mb-3 w-full max-w-[620px] shrink-0">
+              {renderNextStepBar(jobPathStep, { onResumesTab: true })}
+            </div>
+          )}
 
           <div
             ref={previewRef}
