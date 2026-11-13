@@ -17,7 +17,7 @@ import { cleanFormattedDetail } from "./reviewExperience";
 
 // Shown by the UI before the first question; the model never writes it.
 export const INTERVIEW_INTRO =
-  "We'll ask you some quick questions to understand more about what you do. Afterward, we'll suggest additions to your work experience that you can keep or skip. You can tap Wrap up at any time.";
+  "We'll ask you some quick questions to understand more about what you do. Afterward, we'll suggest lines to add to your work description, and you pick which ones to add. You can tap Wrap up at any time.";
 
 // Sample answers per question: enough to show the kind of answer wanted, few
 // enough to read at a glance.
