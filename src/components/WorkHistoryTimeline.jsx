@@ -26,6 +26,7 @@ const LANE_HEIGHT = 20; // minimum height of a single stacked lane
 const LANE_GAP = 3; // vertical gap between stacked overlapping roles
 const BLOCK_GAP = 1.5; // px inset per side, so back-to-back blocks show a hairline gap
 const CLOSE_DELAY_MS = 140;
+const OPEN_STORAGE_KEY = "1resume:timeline-open";
 
 function yearOf(monthIndex) {
   return Math.floor(monthIndex / 12);
@@ -56,10 +57,27 @@ function buildAxisTicks(domainStart, domainEnd, scalePos) {
 export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRole, onAddPosition }) {
   const [active, setActive] = useState(null);
   const [ctaVisible, setCtaVisible] = useState(false);
-  // The chart is heavy vertically; on phones it's collapsed by default behind a
-  // one-line summary so the position cards below get real scroll room. The `sm:`
-  // classes keep it always-expanded on desktop regardless of this state.
-  const [open, setOpen] = useState(false);
+  // The chart is heavy vertically, so it starts minimized to one line: a mini
+  // strip of the timeline and its summary. Pressing that card expands it; the
+  // choice is remembered on this device.
+  const [open, setOpen] = useState(() => {
+    try {
+      return window.localStorage.getItem(OPEN_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleOpen = () => {
+    setActive(null);
+    setOpen((current) => {
+      try {
+        window.localStorage.setItem(OPEN_STORAGE_KEY, current ? "0" : "1");
+      } catch {
+        // Storage can be blocked; the toggle still works for this visit.
+      }
+      return !current;
+    });
+  };
   const [hoverYear, setHoverYear] = useState(null); // year whose gridline is shown
   const [scaleMode, setScaleMode] = useState("recency"); // "recency" | "linear"
   // Hover-capable pointer (desktop mouse) vs. touch. Drives whether a click on a
@@ -151,16 +169,23 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
   const hoverTick = hoverYear == null ? null : axisTicks.find((t) => t.year === hoverYear);
   const trailingGap = gaps.find((gap) => gap.toPresent);
 
-  // One-line recap shown on the collapsed (mobile) summary bar.
+  // One-line recap shown on the minimized card, with a shorter status for the
+  // narrow title row on phones.
+  const summaryParts = [
+    gaps.length === 0 ? "No gaps" : `${gaps.length} gap${gaps.length === 1 ? "" : "s"}`,
+    undated.length > 0 ? `${undated.length} undated` : null,
+  ];
   const summaryText = [
     coverage.currentlyEmployed
       ? "Currently employed"
       : trailingGap
         ? `${formatMonthSpan(trailingGap.months)} since last role`
         : "No current role",
-    gaps.length === 0 ? "No gaps" : `${gaps.length} gap${gaps.length === 1 ? "" : "s"}`,
-    undated.length > 0 ? `${undated.length} undated` : null,
+    ...summaryParts,
   ]
+    .filter(Boolean)
+    .join(" · ");
+  const shortSummaryText = [coverage.currentlyEmployed ? "Employed" : "No current role", ...summaryParts]
     .filter(Boolean)
     .join(" · ");
 
@@ -259,75 +284,128 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
 
   return (
     <div ref={rootRef} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3 sm:p-4">
-      {/* Mobile-only collapse toggle. Tapping it reveals the full chart; on
-          desktop the toggle is hidden and the chart is always shown. */}
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 text-left sm:hidden"
-      >
-        <span className="shrink-0 text-xs uppercase tracking-widest text-neutral-400">Timeline</span>
-        <span className="min-w-0 flex-1 truncate text-xs text-neutral-500">{summaryText}</span>
-        <svg
-          className={`h-4 w-4 shrink-0 text-neutral-500 transition-transform ${open ? "rotate-180" : ""}`}
-          viewBox="0 0 20 20"
-          fill="currentColor"
-          aria-hidden="true"
+      {/* Minimize / expand. Minimized, the card is the title, the summary, and a
+          mini strip of the timeline (roles and gaps) dated "Now" to the first
+          year; on phones the strip gets its own line. Expanded, the row keeps
+          the title and, on wider screens, the coverage stats. */}
+      <div className="flex items-start gap-3 sm:items-center">
+        <button
+          type="button"
+          onClick={toggleOpen}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2 text-left"
         >
-          <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
-        </svg>
-      </button>
-
-      {/* Full chart — hidden on mobile until expanded, always visible on desktop. */}
-      <div className={`${open ? "mt-3" : "hidden"} sm:mt-0 sm:block`}>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-widest text-neutral-500">Employment timeline</p>
-        <div className="hidden sm:flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-          <span className="inline-flex items-center gap-1.5">
+          <span className="shrink-0 text-xs uppercase tracking-wider text-neutral-400 sm:tracking-widest">Employment timeline</span>
+          {!open && (
             <span
-              className={`h-2 w-2 rounded-full ${coverage.currentlyEmployed ? "bg-emerald-500" : "bg-rose-500"}`}
-            />
-            <span className="text-neutral-400">
-              {coverage.currentlyEmployed
-                ? "Currently employed"
-                : trailingGap
-                  ? `No current role · ${formatMonthSpan(trailingGap.months)} since last job`
-                  : "No current role"}
-            </span>
-          </span>
-          <span className="text-neutral-400">
-            {gaps.length === 0
-              ? "No employment gaps"
-              : `${gaps.length} gap${gaps.length === 1 ? "" : "s"} · ${formatMonthSpan(coverage.totalGapMonths)} total`}
-          </span>
-          {undated.length > 0 && (
-            <span className="text-amber-500">
-              {undated.length} undated role{undated.length === 1 ? "" : "s"}
+              className="order-last flex basis-full items-center gap-2 text-[10px] tabular-nums text-neutral-500 sm:order-none sm:basis-0 sm:flex-1"
+              aria-hidden="true"
+            >
+              <span className="shrink-0">Now</span>
+              <span className="relative h-2.5 min-w-[4rem] flex-1 overflow-hidden rounded-sm bg-neutral-800">
+                {gaps.map((gap, index) => {
+                  const { left, width } = box(gap.start, gap.end);
+                  return (
+                    <span
+                      key={`mini-gap-${index}`}
+                      className="absolute inset-y-0 bg-rose-500/50"
+                      style={{ left: `${left}%`, width: `${width}%` }}
+                    />
+                  );
+                })}
+                {companyBlocks.map((b) => (
+                  <span
+                    key={`mini-${b.key}`}
+                    className="absolute"
+                    style={{
+                      left: `${b.left}%`,
+                      width: `${b.width}%`,
+                      minWidth: 2,
+                      top: `${(b.top / bandHeight) * 100}%`,
+                      height: `${(b.height / bandHeight) * 100}%`,
+                      background: b.color,
+                    }}
+                  />
+                ))}
+              </span>
+              <span className="shrink-0">{yearOf(domainStart)}</span>
             </span>
           )}
-          {/* Scale toggle */}
-          <span className="inline-flex overflow-hidden rounded-md border border-neutral-700">
-            {[
-              ["recency", "Recent-weighted"],
-              ["linear", "Linear"],
-            ].map(([mode, label]) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setScaleMode(mode)}
-                className={`px-2 py-0.5 text-[11px] transition-colors ${
-                  scaleMode === mode
-                    ? "bg-neutral-700 text-neutral-100"
-                    : "text-neutral-400 hover:bg-neutral-800"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+          <span
+            className={`min-w-0 flex-1 truncate text-right text-xs text-neutral-500 sm:max-w-[40%] sm:flex-none ${
+              open ? "sm:hidden" : ""
+            }`}
+          >
+            <span className="sm:hidden">{shortSummaryText}</span>
+            <span className="hidden sm:inline">{summaryText}</span>
           </span>
-        </div>
+        </button>
+        {open && (
+          <div className="hidden flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs sm:flex">
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`h-2 w-2 rounded-full ${coverage.currentlyEmployed ? "bg-emerald-500" : "bg-rose-500"}`}
+              />
+              <span className="text-neutral-400">
+                {coverage.currentlyEmployed
+                  ? "Currently employed"
+                  : trailingGap
+                    ? `No current role · ${formatMonthSpan(trailingGap.months)} since last job`
+                    : "No current role"}
+              </span>
+            </span>
+            <span className="text-neutral-400">
+              {gaps.length === 0
+                ? "No employment gaps"
+                : `${gaps.length} gap${gaps.length === 1 ? "" : "s"} · ${formatMonthSpan(coverage.totalGapMonths)} total`}
+            </span>
+            {undated.length > 0 && (
+              <span className="text-amber-500">
+                {undated.length} undated role{undated.length === 1 ? "" : "s"}
+              </span>
+            )}
+            {/* Scale toggle */}
+            <span className="inline-flex overflow-hidden rounded-md border border-neutral-700">
+              {[
+                ["recency", "Recent-weighted"],
+                ["linear", "Linear"],
+              ].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setScaleMode(mode)}
+                  className={`px-2 py-0.5 text-[11px] transition-colors ${
+                    scaleMode === mode
+                      ? "bg-neutral-700 text-neutral-100"
+                      : "text-neutral-400 hover:bg-neutral-800"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </span>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={toggleOpen}
+          aria-expanded={open}
+          aria-label={open ? "Minimize timeline" : "Expand timeline"}
+          className="shrink-0 rounded p-0.5 text-neutral-500 transition-colors hover:text-neutral-200"
+        >
+          <svg
+            className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`}
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+          </svg>
+        </button>
       </div>
+
+      {open && (
+      <div className="mt-3">
 
       {/* Chart band. Popup can extend past the card (see whitespace-nowrap below). */}
       <div className="relative" style={{ height: bandHeight }}>
@@ -483,6 +561,7 @@ export function WorkHistoryTimeline({ workHistory, now = new Date(), onSelectRol
         </div>
       )}
       </div>
+      )}
     </div>
   );
 }

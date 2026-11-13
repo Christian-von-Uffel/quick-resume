@@ -118,7 +118,7 @@ import { SkillsChecklist } from "./components/SkillsChecklist";
 import { GapRow, LongestGapBanner } from "./components/GapNotice";
 import Onboarding from "./components/Onboarding";
 import { NextStepBar } from "./components/NextStepBar";
-import { EMPTY_JOB_PROGRESS, getNextPathStep, getStageStates, jobProgressFor } from "./lib/happyPath";
+import { EMPTY_JOB_PROGRESS, PATH_STAGES, getNextPathStep, getStageStates, jobProgressFor } from "./lib/happyPath";
 import {
   importResume,
   coerceImportedProfile,
@@ -589,6 +589,8 @@ export default function App({ initialData = null, userId = null }) {
   };
   const experiencePathStep = getNextPathStep(pathInputs);
   const jobPathStep = getNextPathStep(pathInputs, { from: "job" });
+  // The checklist pops open on one screen at a time: the tab it was opened on.
+  const [pathOpenTab, setPathOpenTab] = useState(null);
   const updateJobProgress = (jobText, changes) =>
     setJobProgress((current) => ({ ...jobProgressFor(current, jobText), ...changes }));
   const skillsChecklist = useMemo(
@@ -2121,16 +2123,34 @@ export default function App({ initialData = null, userId = null }) {
       ? "Generating..."
       : "";
 
-  const renderNextStepBar = (step, { onResumesTab = false } = {}) => (
+  const renderNextStepBar = (step, tab) => (
     <NextStepBar
       step={step}
       stageStates={getStageStates(step, sortedWorkHistory)}
       busyLabel={step.key === "check" || step.key === "generate" ? pathBusyLabel : ""}
+      open={pathOpenTab === tab && activeMainTab === tab}
+      onOpenChange={(open) => setPathOpenTab(open ? tab : null)}
       onPrimary={() => handlePathPrimary(step)}
       onSkip={() => handlePathSkip(step)}
-      onResumesTab={onResumesTab}
+      onResumesTab={tab === "resume"}
     />
   );
+
+  // The header's Job-ready button opens the checklist where it lives: on this
+  // screen when it has one, otherwise on Work (or Create, from Resumes).
+  const pathTab =
+    activeMainTab === "ai" || activeMainTab === "workHistory"
+      ? activeMainTab
+      : activeMainTab === "resume"
+        ? selectedResumeId === jobPathStep.resumeId ? "resume" : "ai"
+        : "workHistory";
+  const pathTabStep = pathTab === "workHistory" ? experiencePathStep : jobPathStep;
+  const pathDoneCount = getStageStates(pathTabStep, sortedWorkHistory).filter((state) => state === "done").length;
+  const handleToggleChecklist = () => {
+    const isOpenHere = pathOpenTab === pathTab && activeMainTab === pathTab;
+    setActiveMainTab(pathTab);
+    setPathOpenTab(isOpenHere ? null : pathTab);
+  };
 
   const fits = pageCount <= maxPages;
   const lastPage = pages[pageCount - 1];
@@ -2161,6 +2181,24 @@ export default function App({ initialData = null, userId = null }) {
               </button>
             ))}
           </nav>
+          {sortedWorkHistory.length > 0 && (
+            <button
+              type="button"
+              data-path-toggle
+              onClick={handleToggleChecklist}
+              aria-expanded={pathOpenTab === pathTab && activeMainTab === pathTab}
+              aria-label={`Job-ready checklist, ${pathDoneCount} of ${PATH_STAGES.length} steps done`}
+              className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-200"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
+              </svg>
+              <span className="hidden sm:inline">Job-ready</span>
+              <span className="tabular-nums">
+                {pathDoneCount}/{PATH_STAGES.length}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -2370,7 +2408,7 @@ export default function App({ initialData = null, userId = null }) {
           <div ref={workListRef} className="relative flex-1 overflow-y-auto overscroll-contain p-4 space-y-2 pagefit-scrollbar">
             {!isImporting && experiencePathStep.key !== "import" && (
               <div className="sticky -top-4 z-10 -mx-4 -mt-4 bg-neutral-900 px-4 pb-2 pt-4">
-                {renderNextStepBar(experiencePathStep)}
+                {renderNextStepBar(experiencePathStep, "workHistory")}
               </div>
             )}
             {bannerGap && !workHistorySearch.trim() && (
@@ -2822,7 +2860,7 @@ export default function App({ initialData = null, userId = null }) {
             <div className="mx-auto max-w-3xl space-y-5">
               {sortedWorkHistory.length > 0 && (
                 <div className="sticky -top-4 z-10 -mx-4 -mt-4 bg-neutral-900 px-4 pb-1 pt-4">
-                  {renderNextStepBar(jobPathStep)}
+                  {renderNextStepBar(jobPathStep, "ai")}
                 </div>
               )}
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -3410,7 +3448,7 @@ export default function App({ initialData = null, userId = null }) {
 
           {selectedResumeId === jobPathStep.resumeId && (
             <div className="mx-auto mb-3 w-full max-w-[620px] shrink-0">
-              {renderNextStepBar(jobPathStep, { onResumesTab: true })}
+              {renderNextStepBar(jobPathStep, "resume")}
             </div>
           )}
 

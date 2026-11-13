@@ -378,13 +378,13 @@ export function EnrichExperience({
       {status === "review" && (
         <div className="mt-4 space-y-3">
           <p className="text-sm font-medium text-neutral-200">
-            Here's what we'd add. Keep what fits.
+            Here's what we'd add to your work description. Add the ones that fit.
           </p>
 
           {suggestions.map((entry, index) =>
             entry.resolution === "accepted" ? (
               <p key={index} className="text-sm text-emerald-500 dark:text-emerald-400">
-                ✓ Added “{entry.bullet}”
+                ✓ Added to your description: “{entry.bullet}”
               </p>
             ) : entry.resolution === "rejected" ? (
               <p key={index} className="text-sm text-neutral-500">
@@ -404,7 +404,7 @@ export function EnrichExperience({
                     onClick={() => resolveSuggestion(index, "accepted")}
                     className="rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/25 dark:text-emerald-200"
                   >
-                    Keep
+                    Add to description
                   </button>
                   <button
                     type="button"
