@@ -8,12 +8,12 @@
 export const PATH_STAGES = [
   { key: "import", label: "Import" },
   { key: "polish", label: "Polish" },
-  { key: "interview", label: "Interview" },
+  { key: "interview", label: "Strengths" },
   { key: "match", label: "Match" },
   { key: "apply", label: "Apply" },
 ];
 
-// Polish wording needs sentences to read; Interview me needs a title to ask about.
+// Polish wording needs sentences to read; Find my strengths needs a title to ask about.
 export const canPolishRole = (item) => Boolean(item?.description?.trim());
 export const canInterviewRole = (item) => Boolean(item?.position?.trim());
 

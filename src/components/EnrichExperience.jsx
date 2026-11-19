@@ -22,7 +22,7 @@ const secondaryButtonClass =
 const toTranscript = (turns) =>
   turns.map(({ context, question, answer, skipped }) => ({ context, question, answer, skipped }));
 
-// Inline "Interview me" panel for a single work-history position. A plain,
+// Inline "Find my strengths" panel for a single work-history position. A plain,
 // one-question-at-a-time conversation: each question restates what the person
 // just said and points to why it's being asked, with sample answers to tap.
 // Wrap up turns the conversation into suggestions framed as business problems
@@ -56,7 +56,7 @@ export function EnrichExperience({
   const cancelledRef = useRef(false);
   const panelRef = useRef(null);
   const currentRef = useRef(null);
-  // Bullets kept so far, so a later wrap-up (after "Keep interviewing") sees
+  // Bullets kept so far, so a later wrap-up (after "Ask me more") sees
   // them as already written and doesn't suggest them again.
   const keptRef = useRef([]);
   // Re-runs the last async step with its exact arguments, so "Try again"
@@ -253,7 +253,7 @@ export function EnrichExperience({
           <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fillRule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clipRule="evenodd" />
           </svg>
-          Interview me
+          Find my strengths
         </p>
         <button
           type="button"
@@ -308,7 +308,7 @@ export function EnrichExperience({
             )}
             {loadingKind === "suggestions" && (
               <button type="button" onClick={handleKeepInterviewing} className={secondaryButtonClass}>
-                Keep interviewing
+                Ask me more
               </button>
             )}
           </div>
@@ -431,7 +431,7 @@ export function EnrichExperience({
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <button type="button" onClick={handleKeepInterviewing} className={secondaryButtonClass}>
-              Keep interviewing
+              Ask me more
             </button>
             <button
               type="button"
