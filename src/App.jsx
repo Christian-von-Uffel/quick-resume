@@ -2136,7 +2136,7 @@ export default function App({ initialData = null, userId = null }) {
     />
   );
 
-  // The header's Job-ready button opens the checklist where it lives: on this
+  // The header's Checklist button opens the checklist where it lives: on this
   // screen when it has one, otherwise on Work (or Create, from Resumes).
   const pathTab =
     activeMainTab === "ai" || activeMainTab === "workHistory"
@@ -2187,13 +2187,13 @@ export default function App({ initialData = null, userId = null }) {
               data-path-toggle
               onClick={handleToggleChecklist}
               aria-expanded={pathOpenTab === pathTab && activeMainTab === pathTab}
-              aria-label={`Job-ready checklist, ${pathDoneCount} of ${PATH_STAGES.length} steps done`}
+              aria-label={`Application checklist, ${pathDoneCount} of ${PATH_STAGES.length} steps done`}
               className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-200"
             >
               <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
               </svg>
-              <span className="hidden sm:inline">Job-ready</span>
+              <span className="hidden sm:inline">Checklist</span>
               <span className="tabular-nums">
                 {pathDoneCount}/{PATH_STAGES.length}
               </span>
@@ -2556,7 +2556,7 @@ export default function App({ initialData = null, userId = null }) {
                             ? "Add a position title first so we know what this job usually involves."
                             : "Answer a few quick questions about this job to bring out experience you haven't written down yet."
                         }
-                        className={`inline-flex flex-auto items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
+                        className={`inline-flex flex-auto items-center justify-center gap-1 rounded-lg border px-2 py-2 sm:gap-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
                           enrichingWorkId === item.id
                             ? "border-violet-500 bg-violet-500/20 text-violet-700 dark:text-violet-200"
                             : "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20"
@@ -2576,7 +2576,7 @@ export default function App({ initialData = null, userId = null }) {
                             ? "Find hard-to-read sentences and suggest clearer wording."
                             : "Add what you did first, then polish the wording."
                         }
-                        className={`inline-flex flex-auto items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
+                        className={`inline-flex flex-auto items-center justify-center gap-1 rounded-lg border px-2 py-2 sm:gap-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
                           reviewingWorkId === item.id
                             ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
                             : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
@@ -2988,7 +2988,7 @@ export default function App({ initialData = null, userId = null }) {
 
               <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
                 <h2 className="text-sm font-semibold text-neutral-200">
-                  Missing requirements
+                  Cover requirements
                 </h2>
                 <p className="mt-1 text-sm text-neutral-500">
                   Finds requirements in this job that your work history doesn't mention yet, then asks a few quick questions about where you did them. Your answers are saved to your experience, so every future resume can use them too.
@@ -3000,7 +3000,7 @@ export default function App({ initialData = null, userId = null }) {
                   title={findMissingDisabledReason || undefined}
                   className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-200 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isFindingMissingExperience ? "Checking the job's requirements..." : "Check for missing requirements"}
+                  {isFindingMissingExperience ? "Checking the job's requirements..." : "Cover requirements"}
                 </button>
                 {!isFindingMissingExperience && findMissingDisabledReason && (
                   <p className="mt-2 text-xs text-neutral-500">{findMissingDisabledReason}</p>
