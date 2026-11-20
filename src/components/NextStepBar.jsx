@@ -30,9 +30,9 @@ function describeStep(step, { onResumesTab }) {
       };
     case "check":
       return {
-        title: "Check for missing requirements",
+        title: "Cover requirements",
         detail: "Shows what this job asks for that your experience already covers, and asks where you did the rest.",
-        primary: "Check requirements",
+        primary: "Check this job",
         skip: "Skip",
       };
     case "answer":
@@ -67,15 +67,15 @@ function describeStep(step, { onResumesTab }) {
 
 // What each checklist stage is for, under its label in the open checklist.
 const STAGE_DETAIL = {
-  import: "Bring in your resumes",
+  import: "Every role merged into one profile",
   polish: "Clear up the wording on every role",
   interview: "Bring out work you haven't written down",
-  match: "Add a job and check what it asks for",
+  match: "Add the job and what it asks for that you've done",
   apply: "Generate, download, and apply",
 };
 
 // Elements marked data-path-toggle open and close the checklist themselves
-// (the header's Job-ready button), so a press on them isn't an outside click.
+// (the header's Checklist button), so a press on them isn't an outside click.
 const PATH_TOGGLE_ATTR = "data-path-toggle";
 
 function StageMark({ state, number, size = "sm" }) {
@@ -102,9 +102,9 @@ function StageMark({ state, number, size = "sm" }) {
   );
 }
 
-// The happy path as the "Job-ready checklist". Minimized it's one card: the
+// The happy path as the "Application checklist". Minimized it's one card: the
 // five stages as check marks, which step you're on, and its name. Pressing the
-// card (or the header's Job-ready button) pops the full checklist open over the page, with the next
+// card (or the header's Checklist button) pops the full checklist open over the page, with the next
 // step's action and skip under its stage. Lives at the top of the Work, Create,
 // and Resumes screens.
 export function NextStepBar({
@@ -164,7 +164,7 @@ export function NextStepBar({
   }, [open, onOpenChange]);
 
   return (
-    <section ref={rootRef} aria-label="Job-ready checklist" className="relative z-20">
+    <section ref={rootRef} aria-label="Application checklist" className="relative z-20">
       <button
         type="button"
         onClick={() => onOpenChange?.(!open)}
@@ -190,9 +190,9 @@ export function NextStepBar({
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[11px] font-medium uppercase tracking-widest text-amber-600 dark:text-amber-300">
             {/* Phones have room for the name only; the circles show the step. */}
-            <span className="sm:hidden">Job-ready</span>
+            <span className="sm:hidden">Application</span>
             <span className="hidden sm:inline">
-              Job-ready checklist{stepNumber > 0 && ` · Step ${stepNumber} of ${PATH_STAGES.length}`}
+              Application checklist{stepNumber > 0 && ` · Step ${stepNumber} of ${PATH_STAGES.length}`}
             </span>
           </span>
           <span className="block truncate text-sm font-semibold text-neutral-100">{title}</span>
@@ -212,7 +212,7 @@ export function NextStepBar({
           style={{ maxHeight: panelMaxHeight ?? undefined }}
           className="absolute inset-x-0 top-full mt-2 overflow-y-auto overscroll-contain rounded-xl border border-neutral-700 bg-neutral-950 p-4 shadow-2xl shadow-black/40 pagefit-scrollbar">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-neutral-100">Job-ready checklist</p>
+            <p className="text-sm font-semibold text-neutral-100">Application checklist</p>
             <p className="shrink-0 text-xs tabular-nums text-neutral-500">
               {doneCount} of {PATH_STAGES.length} done
             </p>

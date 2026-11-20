@@ -1,15 +1,16 @@
-// The guided happy path: import your resumes → polish the wording on every
-// role → interview every role for what's missing → match it to a job → apply.
+// The guided happy path (the "Application checklist"): import your resumes →
+// polish the wording on every role → find the strengths each role leaves out
+// → cover what a job asks for → apply. Stage keys keep their original names.
 // The next step is derived, never stored: the two passes read the per-role
 // polishedAt / interviewedAt stamps (saved with the profile), and the job steps
 // read this session's job-description work, keyed by the description's text so
 // pasting a new job starts its steps over.
 
 export const PATH_STAGES = [
-  { key: "import", label: "Import" },
-  { key: "polish", label: "Polish" },
-  { key: "interview", label: "Strengths" },
-  { key: "match", label: "Match" },
+  { key: "import", label: "Import resumes" },
+  { key: "polish", label: "Polish wording" },
+  { key: "interview", label: "Find strengths" },
+  { key: "match", label: "Cover requirements" },
   { key: "apply", label: "Apply" },
 ];
 
@@ -32,7 +33,7 @@ export function getRolePass(workHistory, pass) {
 
 // The job work this session has done, as the app tracks it:
 //   job          the description the record belongs to (trimmed)
-//   checked      "Check for missing requirements" ran (or was skipped)
+//   checked      "Cover requirements" ran (or was skipped)
 //   answered     the person finished with the questions (or skipped them)
 //   resumeId     the resume generated for this job
 //   downloaded   that resume's PDF was exported

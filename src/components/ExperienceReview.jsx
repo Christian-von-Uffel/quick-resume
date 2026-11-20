@@ -224,7 +224,7 @@ export function ExperienceReview({
   };
 
   // The review is finished once it found nothing to fix or every flagged
-  // sentence was accepted or kept; that completes this role's Polish pass.
+  // sentence was accepted or kept; that completes this role's Polish wording pass.
   const isFinished =
     status === "empty" || (status === "ready" && items.every((item) => item.resolution));
   useEffect(() => {
