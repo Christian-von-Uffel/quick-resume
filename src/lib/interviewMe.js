@@ -5,7 +5,8 @@ import {
 } from "./resumeModel";
 import { cleanFormattedDetail } from "./reviewExperience";
 
-// The conversational "Interview me" flow for one position. One plain question
+// The conversational "Find my strengths" flow for one position (called
+// "Interview me" until 2026-11-19; the code keeps the interview names). One plain question
 // per turn, each tied back to something the person said, aimed at the problems
 // their work solved for a business. The person wraps up whenever they like, and
 // the answers become suggestions framed the way a hiring manager buys them:
@@ -17,7 +18,7 @@ import { cleanFormattedDetail } from "./reviewExperience";
 
 // Shown by the UI before the first question; the model never writes it.
 export const INTERVIEW_INTRO =
-  "We'll ask you some quick questions to understand more about what you do. Afterward, we'll suggest lines to add to your work description, and you pick which ones to add. You can tap Wrap up at any time.";
+  "Let's find the strengths your work description leaves out. We'll ask you some quick questions about what you do, then suggest lines for your description, and you pick which ones to add. You can tap Wrap up at any time.";
 
 // Sample answers per question: enough to show the kind of answer wanted, few
 // enough to read at a glance.

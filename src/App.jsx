@@ -254,7 +254,7 @@ export default function App({ initialData = null, userId = null }) {
   // Which position is opened out of the collapsed list (null = all closed). On
   // phones the open position takes over the list, like a detail screen.
   const [openWorkId, setOpenWorkId] = useState(null);
-  // Which position's inline "Interview me" enrichment panel is open (null = none).
+  // Which position's inline "Find my strengths" panel is open (null = none).
   const [enrichingWorkId, setEnrichingWorkId] = useState(null);
   // Which position is pending a delete confirmation (null = no modal open).
   const [deleteConfirmWorkId, setDeleteConfirmWorkId] = useState(null);
@@ -1290,7 +1290,7 @@ export default function App({ initialData = null, userId = null }) {
     }, 3000);
   }, []);
 
-  // Bind callLlmForJson for one Interview me call. Repairs are logged against
+  // Bind callLlmForJson for one Find my strengths call. Repairs are logged against
   // the original prompt with purpose "repair", so prompt_id stays on the prompt
   // that needed fixing.
   const interviewCaller = useCallback(
@@ -2062,7 +2062,7 @@ export default function App({ initialData = null, userId = null }) {
     );
   }, []);
 
-  // Open a role with its Polish wording or Interview me panel already running.
+  // Open a role with its Polish wording or Find my strengths panel already running.
   const handleStartRoleStep = (pass, workId) => {
     handleFocusWorkHistoryRole(workId);
     setReviewingWorkId(pass === "polish" ? workId : null);
@@ -2556,7 +2556,7 @@ export default function App({ initialData = null, userId = null }) {
                             ? "Add a position title first so we know what this job usually involves."
                             : "Answer a few quick questions about this job to bring out experience you haven't written down yet."
                         }
-                        className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none ${
+                        className={`inline-flex flex-auto items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
                           enrichingWorkId === item.id
                             ? "border-violet-500 bg-violet-500/20 text-violet-700 dark:text-violet-200"
                             : "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20"
@@ -2565,7 +2565,7 @@ export default function App({ initialData = null, userId = null }) {
                         <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                           <path fillRule="evenodd" d="M15.98 1.804a1 1 0 0 0-1.96 0l-.24 1.192a1 1 0 0 1-.784.785l-1.192.238a1 1 0 0 0 0 1.962l1.192.238a1 1 0 0 1 .785.785l.238 1.192a1 1 0 0 0 1.962 0l.238-1.192a1 1 0 0 1 .785-.785l1.192-.238a1 1 0 0 0 0-1.962l-1.192-.238a1 1 0 0 1-.785-.785l-.238-1.192ZM6.949 5.684a1 1 0 0 0-1.898 0l-.683 2.051a1 1 0 0 1-.633.633l-2.051.683a1 1 0 0 0 0 1.898l2.051.684a1 1 0 0 1 .633.632l.683 2.051a1 1 0 0 0 1.898 0l.683-2.051a1 1 0 0 1 .633-.633l2.051-.683a1 1 0 0 0 0-1.898l-2.051-.683a1 1 0 0 1-.633-.633L6.95 5.684ZM13.949 13.684a1 1 0 0 0-1.898 0l-.184.551a1 1 0 0 1-.632.633l-.551.183a1 1 0 0 0 0 1.898l.551.183a1 1 0 0 1 .633.633l.183.551a1 1 0 0 0 1.898 0l.184-.551a1 1 0 0 1 .632-.633l.551-.183a1 1 0 0 0 0-1.898l-.551-.184a1 1 0 0 1-.633-.632l-.183-.551Z" clipRule="evenodd" />
                         </svg>
-                        Interview me
+                        Find my strengths
                       </button>
                       <button
                         type="button"
@@ -2576,7 +2576,7 @@ export default function App({ initialData = null, userId = null }) {
                             ? "Find hard-to-read sentences and suggest clearer wording."
                             : "Add what you did first, then polish the wording."
                         }
-                        className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none ${
+                        className={`inline-flex flex-auto items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
                           reviewingWorkId === item.id
                             ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
                             : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"

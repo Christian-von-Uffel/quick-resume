@@ -17,9 +17,9 @@ function describeStep(step, { onResumesTab }) {
       };
     case "interview":
       return {
-        title: `Interview me: ${roleLabel(step.work)}`,
+        title: `Find my strengths: ${roleLabel(step.work)}`,
         detail: `Quick questions bring out work you haven't written down, in your own words. ${step.done} of ${step.total} roles done.`,
-        primary: "Start interview",
+        primary: "Find strengths",
         skip: "Skip this role",
       };
     case "job":
