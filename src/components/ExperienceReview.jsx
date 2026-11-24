@@ -20,12 +20,25 @@ import { PipelineSteps } from "./PipelineSteps";
 // validate pass itself is sync, so without this beat React never paints it.
 const PREPARE_STEP_VISIBLE_MS = 450;
 
+// Grow the rewrite box to its text so the whole sentence shows without scrolling.
+function fitToContent(el) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
+// An edited rewrite replaces one sentence in place, so line breaks typed into
+// the box become spaces rather than splitting the description.
+const toOneLine = (text) => text.replace(/\s+/g, " ").trim();
+
 // Inline "clarity review" panel for a single work-history position. On open it asks
 // the model which sentences are hard to read; for each it shows a plain question with
 // pickable interpretations (plus a free-text "Something else"). When the model also
 // suggested job skills, tools, or collaborators the sentence might imply, a second
 // multi-select step lets the person confirm which applied (or "None of these") before
-// the rewrite is fetched. Accepting replaces the sentence in the description.
+// the rewrite is fetched. The rewrite is editable in place: Accept replaces the
+// sentence in the description with the text as edited, and Keep original leaves
+// the sentence as it was.
 export function ExperienceReview({
   position,
   company,
@@ -125,6 +138,7 @@ export function ExperienceReview({
             selectedSkills: [], // confirmed entries from item.skillOptions
             skillsNone: false, // explicitly answered "none of these"
             proposal: "",
+            draft: "", // the rewrite as the person has edited it; starts as the proposal
             proposalStatus: "idle", // "idle" | "loading" | "ready" | "error"
             proposalError: "",
             resolution: null, // "accepted" | "rejected"
@@ -174,6 +188,7 @@ export function ExperienceReview({
     updateItem(item.id, {
       choice: trimmed,
       proposal: "",
+      draft: "",
       proposalStatus: "loading",
       proposalError: "",
       resolution: null,
@@ -213,7 +228,7 @@ export function ExperienceReview({
         { clarityReviewId: reviewIdRef.current },
         { suggestion: proposal, promptId: rewritePromptId, questionId: item.questionId }
       );
-      updateItem(item.id, { proposal, proposalStatus: "ready", suggestionId });
+      updateItem(item.id, { proposal, draft: proposal, proposalStatus: "ready", suggestionId });
     } catch (err) {
       if (cancelledRef.current) return;
       updateItem(item.id, {
@@ -234,8 +249,11 @@ export function ExperienceReview({
   }, [isFinished]);
 
   const handleAccept = (item) => {
-    onAcceptSentence(item.sentence, item.proposal);
-    updateItem(item.id, { resolution: "accepted" });
+    const text = toOneLine(item.draft);
+    if (!text) return;
+    onAcceptSentence(item.sentence, text);
+    // The confirmation shows what actually went into the description.
+    updateItem(item.id, { resolution: "accepted", proposal: text });
     recordSuggestionAccepted(item.suggestionId);
   };
 
@@ -333,6 +351,7 @@ export function ExperienceReview({
                                 usingCustom: false,
                                 choice: option.trim(),
                                 proposal: "",
+                                draft: "",
                                 proposalStatus: "idle",
                                 proposalError: "",
                               });
@@ -341,7 +360,7 @@ export function ExperienceReview({
                               requestProposal(item, option);
                             }
                           }}
-                          className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
+                          className={`rounded-2xl border px-3 py-1.5 text-left text-sm transition-colors max-sm:min-h-[38px] ${
                             active
                               ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                               : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -354,7 +373,7 @@ export function ExperienceReview({
                     <button
                       type="button"
                       onClick={() => updateItem(item.id, { usingCustom: true })}
-                      className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
+                      className={`rounded-2xl border px-3 py-1.5 text-left text-sm transition-colors max-sm:min-h-[38px] ${
                         item.usingCustom
                           ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                           : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -405,7 +424,7 @@ export function ExperienceReview({
                               key={index}
                               type="button"
                               onClick={() => toggleSkill(item.id, skill)}
-                              className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
+                              className={`rounded-2xl border px-3 py-1.5 text-left text-sm transition-colors max-sm:min-h-[38px] ${
                                 active
                                   ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                                   : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -420,7 +439,7 @@ export function ExperienceReview({
                           onClick={() =>
                             updateItem(item.id, { selectedSkills: [], skillsNone: true })
                           }
-                          className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
+                          className={`rounded-2xl border px-3 py-1.5 text-left text-sm transition-colors max-sm:min-h-[38px] ${
                             item.skillsNone
                               ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                               : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -452,15 +471,30 @@ export function ExperienceReview({
 
                   {item.proposalStatus === "ready" && (
                     <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/70 p-3">
-                      <p className="text-xs uppercase tracking-widest text-neutral-500">
-                        Suggested rewrite
-                      </p>
-                      <p className="mt-1 text-sm text-neutral-100">{item.proposal}</p>
+                      <label htmlFor={`rewrite-${item.id}`} className="flex items-baseline justify-between gap-3">
+                        <span className="text-xs uppercase tracking-widest text-neutral-500">Suggested rewrite</span>
+                        <span className="text-xs text-neutral-500">
+                          <span className="sm:hidden">Tap to edit</span>
+                          <span className="hidden sm:inline">Click to edit</span>
+                        </span>
+                      </label>
+                      <textarea
+                        id={`rewrite-${item.id}`}
+                        ref={fitToContent}
+                        value={item.draft}
+                        onChange={(e) => {
+                          updateItem(item.id, { draft: e.target.value });
+                          fitToContent(e.currentTarget);
+                        }}
+                        rows={2}
+                        className="mt-1.5 block w-full resize-none overflow-hidden rounded-md border border-neutral-700 bg-neutral-950/40 px-2.5 py-2 text-base text-neutral-100 outline-none focus:border-blue-500 sm:text-sm"
+                      />
                       <div className="mt-3 flex gap-2">
                         <button
                           type="button"
                           onClick={() => handleAccept(item)}
-                          className="rounded-lg border border-emerald-700 bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-800 max-sm:min-h-11 max-sm:px-4"
+                          disabled={!toOneLine(item.draft)}
+                          className="rounded-lg border border-emerald-700 bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 max-sm:min-h-11 max-sm:px-4"
                         >
                           Accept
                         </button>
@@ -469,7 +503,7 @@ export function ExperienceReview({
                           onClick={() => handleReject(item)}
                           className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 max-sm:min-h-11 max-sm:px-4"
                         >
-                          Reject
+                          Keep original
                         </button>
                       </div>
                     </div>
