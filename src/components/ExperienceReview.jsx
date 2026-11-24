@@ -316,7 +316,7 @@ export function ExperienceReview({
                 </p>
               ) : (
                 <>
-                  <p className="mt-3 text-sm font-medium text-neutral-200">
+                  <p className="mt-3 text-base font-semibold text-neutral-200 sm:text-sm sm:font-medium">
                     {item.question}
                   </p>
 
@@ -341,7 +341,7 @@ export function ExperienceReview({
                               requestProposal(item, option);
                             }
                           }}
-                          className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                          className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
                             active
                               ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                               : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -354,7 +354,7 @@ export function ExperienceReview({
                     <button
                       type="button"
                       onClick={() => updateItem(item.id, { usingCustom: true })}
-                      className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                      className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
                         item.usingCustom
                           ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                           : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -384,7 +384,7 @@ export function ExperienceReview({
                           type="button"
                           onClick={() => requestProposal(item, item.customAnswer)}
                           disabled={!item.customAnswer.trim()}
-                          className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50 max-sm:min-h-11"
                         >
                           Get suggestion
                         </button>
@@ -394,7 +394,7 @@ export function ExperienceReview({
 
                   {hasSkillOptions && (item.choice !== null || item.usingCustom) && (
                     <>
-                      <p className="mt-3 text-sm font-medium text-neutral-200">
+                      <p className="mt-3 text-base font-semibold text-neutral-200 sm:text-sm sm:font-medium">
                         Were any of these part of this work? Select all that apply.
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
@@ -405,7 +405,7 @@ export function ExperienceReview({
                               key={index}
                               type="button"
                               onClick={() => toggleSkill(item.id, skill)}
-                              className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                              className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
                                 active
                                   ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                                   : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -420,7 +420,7 @@ export function ExperienceReview({
                           onClick={() =>
                             updateItem(item.id, { selectedSkills: [], skillsNone: true })
                           }
-                          className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                          className={`rounded-2xl border px-3 py-1.5 text-sm transition-colors max-sm:min-h-[38px] ${
                             item.skillsNone
                               ? "border-blue-500 bg-blue-500/20 text-neutral-50"
                               : "border-neutral-700 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-50"
@@ -433,7 +433,7 @@ export function ExperienceReview({
                         type="button"
                         onClick={() => requestProposal(item, clarification)}
                         disabled={!clarification.trim()}
-                        className="mt-3 rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="mt-3 rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50 max-sm:min-h-11"
                       >
                         Get suggestion
                       </button>
@@ -460,14 +460,14 @@ export function ExperienceReview({
                         <button
                           type="button"
                           onClick={() => handleAccept(item)}
-                          className="rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/25 dark:text-emerald-200"
+                          className="rounded-lg border border-emerald-700 bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-800 max-sm:min-h-11 max-sm:px-4"
                         >
                           Accept
                         </button>
                         <button
                           type="button"
                           onClick={() => handleReject(item)}
-                          className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+                          className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 max-sm:min-h-11 max-sm:px-4"
                         >
                           Reject
                         </button>
