@@ -2152,6 +2152,10 @@ export default function App({ initialData = null, userId = null }) {
     setPathOpenTab(isOpenHere ? null : pathTab);
   };
 
+  // On phones an open role takes over the screen: its own header with a way
+  // back replaces the section title and the Experience tabs.
+  const showRoleHeader = activeMainTab === "workHistory" && Boolean(openWorkItem);
+
   const fits = pageCount <= maxPages;
   const lastPage = pages[pageCount - 1];
   const lastPageFill = lastPage ? Math.max(0, Math.round(lastPage.contentBottom - padding)) : 0;
@@ -2160,7 +2164,7 @@ export default function App({ initialData = null, userId = null }) {
   return (
     <div className="h-screen [height:100dvh] flex flex-col overflow-hidden">
       {showOnboarding && <Onboarding onComplete={completeOnboarding} />}
-      <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-neutral-50">
+      <header className={`shrink-0 border-b border-neutral-800 bg-neutral-950 px-4 py-3 text-neutral-50 ${showRoleHeader ? "max-sm:hidden" : ""}`}>
         <div className="flex items-center gap-2">
           <h1 className="min-w-0 flex-1 truncate text-lg font-semibold sm:hidden">{activeNavSection.title}</h1>
           <nav aria-label="Sections" className="hidden min-w-0 flex-1 items-center gap-2 sm:flex">
@@ -2240,6 +2244,33 @@ export default function App({ initialData = null, userId = null }) {
           </div>
         )}
       </header>
+
+      {showRoleHeader && (
+        <header className="shrink-0 border-b border-neutral-800 bg-neutral-950 px-2 py-2 text-neutral-50 sm:hidden">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setOpenWorkId(null)}
+              aria-label="Back to all positions"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50"
+            >
+              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" />
+              </svg>
+            </button>
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-lg font-semibold">
+                {openWorkItem.position.trim() || "Untitled position"}
+              </h1>
+              <p className="truncate text-sm text-neutral-400">
+                {[openWorkItem.company.trim(), formatRoleRange(openWorkItem, { withMonths: true })]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            </div>
+          </div>
+        </header>
+      )}
 
       <main className="flex-1 flex flex-col sm:flex-row bg-neutral-900 text-neutral-50 min-h-0 overflow-hidden">
         {/* ── Mobile tab bar ─────────────────────────── */}
@@ -2466,6 +2497,9 @@ export default function App({ initialData = null, userId = null }) {
                 const sparse = isSparseDescription(item.description);
                 const isOpen = openWorkItem?.id === item.id;
                 const roleTitle = item.position.trim() || "Untitled position";
+                // While Polish wording or Find my strengths is open, phones show
+                // just that panel; the description and dates come back on close.
+                const panelOpen = reviewingWorkId === item.id || enrichingWorkId === item.id;
 
                 return (
                 <div
@@ -2501,19 +2535,9 @@ export default function App({ initialData = null, userId = null }) {
                   <div className="p-4 space-y-4">
                     <button
                       type="button"
-                      onClick={() => setOpenWorkId(null)}
-                      className="-ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-sm text-neutral-400 transition-colors hover:text-neutral-100 sm:hidden"
-                    >
-                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                        <path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" />
-                      </svg>
-                      All positions
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => handleToggleWorkCard(item.id)}
                       aria-expanded="true"
-                      className="flex w-full items-start gap-3 text-left"
+                      className="flex w-full items-start gap-3 text-left max-sm:hidden"
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block text-lg font-semibold text-neutral-50">{roleTitle}</span>
@@ -2526,25 +2550,8 @@ export default function App({ initialData = null, userId = null }) {
                       </svg>
                     </button>
 
-                    <label className="block">
-                      <span className="block text-xs text-neutral-500 mb-1">
-                        What you did
-                      </span>
-                      <textarea
-                        value={item.description}
-                        onChange={(e) => handleUpdateWorkHistory(item.id, "description", e.target.value)}
-                        placeholder="Describe the responsibilities, accomplishments, and results from this role."
-                        rows={6}
-                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
-                      />
-                    </label>
 
                     
-                    {sparse && item.position.trim() && enrichingWorkId !== item.id && (
-                      <p className="-mt-2 text-xs text-neutral-500">
-                        This role looks light. A few quick questions can fill it in.
-                      </p>
-                    )}
 
                     <div className="flex gap-2">
                       <button
@@ -2556,7 +2563,7 @@ export default function App({ initialData = null, userId = null }) {
                             ? "Add a position title first so we know what this job usually involves."
                             : "Answer a few quick questions about this job to bring out experience you haven't written down yet."
                         }
-                        className={`inline-flex flex-auto items-center justify-center gap-1 rounded-lg border px-2 py-2 sm:gap-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
+                        className={`inline-flex flex-auto items-center justify-center gap-1 rounded-lg border px-2 py-2 max-sm:min-h-11 sm:gap-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
                           enrichingWorkId === item.id
                             ? "border-violet-500 bg-violet-500/20 text-violet-700 dark:text-violet-200"
                             : "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20"
@@ -2576,7 +2583,7 @@ export default function App({ initialData = null, userId = null }) {
                             ? "Find hard-to-read sentences and suggest clearer wording."
                             : "Add what you did first, then polish the wording."
                         }
-                        className={`inline-flex flex-auto items-center justify-center gap-1 rounded-lg border px-2 py-2 sm:gap-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
+                        className={`inline-flex flex-auto items-center justify-center gap-1 rounded-lg border px-2 py-2 max-sm:min-h-11 sm:gap-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:px-3 ${
                           reviewingWorkId === item.id
                             ? "border-blue-500 bg-blue-500/20 text-blue-700 dark:text-blue-200"
                             : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20"
@@ -2588,6 +2595,12 @@ export default function App({ initialData = null, userId = null }) {
                         Polish wording
                       </button>
                     </div>
+
+                    {sparse && item.position.trim() && !panelOpen && (
+                      <p className="-mt-2 text-xs text-neutral-500">
+                        This role looks light. A few quick questions can fill it in.
+                      </p>
+                    )}
 
                     {reviewingWorkId === item.id && (
                       <ExperienceReview
@@ -2620,7 +2633,20 @@ export default function App({ initialData = null, userId = null }) {
                       />
                     )}
 
-                    <div className="space-y-3 border-t border-neutral-800 pt-4">
+                    <label className={`block ${panelOpen ? "max-sm:hidden" : ""}`}>
+                      <span className="block text-xs text-neutral-500 mb-1">
+                        What you did
+                      </span>
+                      <textarea
+                        value={item.description}
+                        onChange={(e) => handleUpdateWorkHistory(item.id, "description", e.target.value)}
+                        placeholder="Describe the responsibilities, accomplishments, and results from this role."
+                        rows={6}
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-neutral-500 resize-none pagefit-scrollbar"
+                      />
+                    </label>
+
+                    <div className={`space-y-3 border-t border-neutral-800 pt-4 ${panelOpen ? "max-sm:hidden" : ""}`}>
                       <p className="text-xs uppercase tracking-widest text-neutral-500">Title and dates</p>
                     <label className="block">
                       <span className="block text-xs text-neutral-500 mb-1">
@@ -2735,7 +2761,7 @@ export default function App({ initialData = null, userId = null }) {
                         setDeletePositionConfirmText("");
                         setDeleteConfirmWorkId(item.id);
                       }}
-                      className="rounded-md px-1 py-1 text-sm text-red-400/80 transition-colors hover:text-red-300"
+                      className={`rounded-md px-1 py-1 text-sm text-red-400/80 transition-colors hover:text-red-300 ${panelOpen ? "max-sm:hidden" : ""}`}
                     >
                       Delete position
                     </button>
